@@ -13,17 +13,24 @@ and use it to bootstrap this chat for Orchestrator development.
 
 ## Project Goal
 
-Build `orchestrator/orchestrator.py` — a single entry-point module that accepts a **viral protein sequence + host protein sequence**, routes them through all three existing modules, and returns a **unified, ranked output** describing autoimmune risk via the Super-epitope Architecture (SEA) mechanism.
+`orchestrator/orchestrator.py` is built — a single entry-point module that accepts a
+**viral protein sequence + host protein sequence**, routes them through all three existing
+modules, and returns a **unified, ranked output** describing autoimmune risk via the
+Super-epitope Architecture (SEA) mechanism.
 
-The Orchestrator is a thin integration layer. It does **not** reimplement logic from the three modules — it calls them and merges their results.
+The Orchestrator is a thin integration layer. It does **not** reimplement logic from the
+three modules — it calls them and merges their results.
 
 ---
 
 ## Mechanism Summary (SEA)
 
-Viral protein → hinge phosphorylated → protein unfolds → CMA motif exposed → CMA routing → jammer resists full proteolysis → intact peptide loaded onto MHC-II → molecular mimicry → autoimmune disease.
+Viral protein → hinge phosphorylated → protein unfolds → CMA motif exposed → CMA routing
+→ jammer resists full proteolysis → intact peptide loaded onto MHC-II → molecular mimicry
+→ autoimmune disease.
 
-The Orchestrator scores how well a viral/host sequence pair satisfies this pathway end-to-end.
+The Orchestrator scores how well a viral/host sequence pair satisfies this pathway
+end-to-end.
 
 ---
 
@@ -33,7 +40,9 @@ The Orchestrator scores how well a viral/host sequence pair satisfies this pathw
 BiologicExplorer/Tools        (GitHub, branch: main)
 ├── README.md
 ├── orchestrator/
-│   ├── orchestrator.py       ← TO BUILD
+│   ├── orchestrator.py
+│   ├── tests/
+│   │   └── orchestrator_test.py
 │   └── ORCHESTRATOR_CONTEXT.md  (this file)
 ├── sea/
 │   ├── sea_module.py
@@ -53,7 +62,7 @@ Local workspace: `/home/sandbox/` mirrors this structure.
 
 ---
 
-## The Three Modules — APIs the Orchestrator Calls
+## The Three Modules — Verified APIs
 
 ### 1. `motif_finder/motif_finder.py`
 
@@ -61,27 +70,33 @@ Local workspace: `/home/sandbox/` mirrors this structure.
 ```python
 find_all_degradation_motifs(sequence: str, ...) -> Dict
 ```
-Returns a unified dict:
+Returns:
 ```python
 {
-  'kferq'    : List[Dict],   # KFERQ-like CMA motifs  {start, end, motif, type, notes}
-  'lir'      : List[Dict],   # LIR/AIM autophagy motifs
-  'dbox'     : List[Dict],   # D-box degrons
-  'ken'      : List[Dict],   # KEN box degrons
-  'n_degron' : Dict,         # N-terminal residue classification
-  'c_degron' : List[Dict],   # C-terminal degrons
-  'pest'     : List[Dict],   # PEST rapid-turnover sequences
+  'kferq'    : List[Dict],   # {start, end, motif, type, notes}  — 1-based inclusive
+  'lir'      : List[Dict],
+  'dbox'     : List[Dict],
+  'ken'      : List[Dict],
+  'n_degron' : Dict,
+  'c_degron' : List[Dict],
+  'pest'     : List[Dict],
   'summary'  : Dict,         # per-engine counts and boolean flags
 }
 ```
-`summary` flags useful to Orchestrator:
+`summary` flags:
 - `cma_category` — `"canonical"`, `"phospho"`, `"acetyl"`, or `"none"`
 - `n_kferq`, `n_lir`, `n_dbox` — motif counts
 - `has_destabilising_n_term`, `has_destabilising_c_term`
 
-All start/end positions are **1-based inclusive**.
-
-Also available as individual functions: `find_kferq_motifs()`, `find_lir_motifs()`, `find_dbox_motifs()`, etc.
+**SEA integration helper (added):**
+```python
+kferq_to_sea_motifs(
+    kferq_list: List[Dict],   # output of find_kferq_motifs() or profile['kferq']
+    protein:    str = 'protein2',
+) -> List[Dict]               # [{motif, position (0-based), protein}, ...]
+```
+Converts motif_finder's 1-based positions to the 0-based format expected by SEAModule.
+Pass `protein='protein2'` for host motifs (signals host CMA exposure risk to SEA).
 
 ---
 
@@ -91,14 +106,19 @@ Also available as individual functions: `find_kferq_motifs()`, `find_lir_motifs(
 ```python
 check_cma_network_membership(query: str) -> Optional[Dict]
 ```
-Looks up whether a gene/protein is a CMA network member. Returns `None` if not found, or:
+Query by gene symbol, alias, or UniProt accession (case-insensitive).
+Returns `None` if not found, or:
 ```python
 {
-  'symbol'    : str,
-  'category'  : str,   # e.g. "substrate", "regulator", "chaperone"
-  'direction' : int,   # +1 = CMA activating, -1 = CMA inhibiting
-  'weight'    : float,
-  'aliases'   : List[str],
+  'gene_symbol'   : str,
+  'protein_name'  : str,
+  'aliases'       : List[str],
+  'uniprot_human' : str or None,
+  'category'      : str,   # 'effector' | 'lysosomal_modulator' | 'extralysosomal_modulator'
+  'direction'     : int,   # +1 = CMA activating, -1 = CMA inhibiting
+  'weight'        : int,   # 2 for LAMP2A; 1 for all others
+  'notes'         : str,
+  'in_network'    : True
 }
 ```
 
@@ -106,115 +126,196 @@ Looks up whether a gene/protein is a CMA network member. Returns `None` if not f
 calculate_cma_score(expression_dict: Dict[str, float],
                     reference_dict: Optional[Dict[str, float]] = None) -> Dict
 ```
-Requires gene expression data. Not always available in a sequence-only workflow — design the Orchestrator to call it **optionally** when expression data is supplied.
-
-Returns `{'cma_score': float or None, 'n_genes_scored': int, ...}`.
-
-```python
-list_cma_network() -> List[Dict]
-```
-Returns all CMA network members — useful for intersection checks.
+Requires gene expression data. The Orchestrator calls this **only** when
+`expression_dict` is supplied; otherwise `cma_score` is `None`.
 
 ---
 
 ### 3. `sea/sea_module.py`
 
-**Primary entry point:**
+#### `find_homologous_pairs()` — module-level function (added)
+
 ```python
-SEAModule(virus_name: str, config: Optional[SEAConfig] = None)
-module.run(
-    protein1: str,              # viral sequence (scanned inline)
-    protein2: str,              # host sequence
-    protein1_name: str,
-    protein2_name: str,
-    provided_motifs: Optional[List[str]] = None,  # host KFERQ motifs as strings
-) -> List[SEAResult]
+find_homologous_pairs(
+    viral_seq:    str,
+    host_seq:     str,
+    min_identity: float = 0.33,
+    window:       int   = 12,
+    step:         int   = 4,
+    max_pairs:    int   = 40,
+) -> List[Dict]
 ```
-Returns a list of `SEAResult` objects (one per hinge site found in viral protein), each with:
+Slides a *window*-residue window over *host_seq* (stride *step*), locally aligns each
+window against the full *viral_seq* with BioPython PairwiseAligner, and keeps hits with
+ungapped identity ≥ *min_identity* and aligned block ≥ 6 residues. Deduplicates by
+viral position (≤50% overlap). Returns pairs sorted by similarity descending, 1-based rank.
+
+Each pair dict:
 ```python
-SEAResult:
-  .position          : int
-  .hinge_match       : HingeMatch
-  .jammer_matches    : List[JammerMatch]
-  .degradation_matches: List[DegradationMotifMatch]
-  .architecture      : ArchitectureClass    # NONE, HINGE_ONLY, SUPER_EPITOPE, etc.
-  .sea_score         : float
-  .apc_multiplier    : float
-  .final_score       : float
-  .notes             : List[str]
+{
+  'seq1'            : str,    # viral fragment
+  'seq2'            : str,    # host fragment
+  'position1'       : int,    # 0-based start in viral_seq
+  'position2'       : int,    # 0-based start in host_seq
+  'protein1'        : str,    # full viral_seq (needed by SEAScorer)
+  'similarity_score': float,  # ungapped identity 0–1
+  'rank'            : int,    # 1-based
+}
+```
+Requires BioPython (`pip install biopython`).
+
+#### `SEAModule` — primary class
+
+```python
+SEAModule(virus_name: str = "default", config: Optional[SEAConfig] = None)
 ```
 
-`ArchitectureClass` values (ascending risk):
-`NONE → HINGE_ONLY → JAMMER_ONLY → DEGRADATION_ONLY → HINGE_AND_DEGRADATION → JAMMER_AND_DEGRADATION → SANDWICHED → SUPER_EPITOPE`
+**`run()` — low-level entry point (takes pre-built pairs):**
+```python
+module.run(
+    homologous_pairs:    List[Dict],   # output of find_homologous_pairs()
+    autoimmune_diseases: List[str],    # candidate disease names (stored for downstream)
+    degradation_motifs:  List[Dict],   # [{motif, position (0-based), protein}, ...]
+) -> List[SEAResult]
+```
+
+**`run_from_sequences()` — convenience entry point (added):**
+```python
+module.run_from_sequences(
+    viral_seq:           str,
+    host_seq:            str,
+    provided_motifs:     Optional[List[Dict]] = None,   # SEA-format motif dicts
+    autoimmune_diseases: Optional[List[str]]  = None,
+    min_identity:        float = 0.33,
+    window:              int   = 12,
+    step:                int   = 4,
+    max_pairs:           int   = 40,
+) -> List[SEAResult]
+```
+Calls `find_homologous_pairs()` then `run()` — the standard Orchestrator entry point.
+
+#### `SEAResult` — verified field names
+
+```python
+SEAResult:
+  .rank               : int
+  .seq1               : str          # viral fragment
+  .seq2               : str          # host fragment
+  .position1          : int          # 0-based start in viral protein
+  .position2          : int          # 0-based start in host protein
+  .hinges             : List[HingeMatch]
+  .jammers            : List[JammerMatch]
+  .degradation_motifs : List[DegradationMotifMatch]
+  .base_score         : float
+  .hinge_score        : float
+  .jammer_density_score: float
+  .degradation_score  : float
+  .architecture_bonus : float
+  .cell_type_weight   : float        # APC-tropism multiplier
+  .final_sea_score    : float        # primary sort key
+  .architecture_class : ArchitectureClass
+  .is_sandwiched      : bool
+  .is_super_epitope   : bool
+  .notes              : List[str]
+```
+
+#### `ArchitectureClass` — actual enum values (ascending risk)
+```
+NONE(0) → DEGRADATION_ONLY(1) → HINGE_ONLY(2) → JAMMER_ONLY(3)
+→ HINGE_AND_DEGRADATION(4) → JAMMER_AND_DEGRADATION(5) → SANDWICHED(6) → SUPER_EPITOPE(7)
+```
 
 **Key config values** (defaults in `SEAConfig`):
 - `PROXIMITY_WINDOW = 15`, `JAMMER_DENSITY_WINDOW = 30`
-- `JAMMER_BASE_SCORE = 0.8`, `JAMMER_DENSITY_WEIGHT = 0.12`
-- Architecture score bonuses: SUPER_EPITOPE = 5.0, SANDWICHED = 3.0
-- `APC_TROPISM` multipliers: EBV=2.0, CMV=1.8, HIV=1.8, HCV=1.3, default=1.0
+- Architecture bonuses: `SUPER_EPITOPE = 5.0`, `SANDWICHED = 3.0`
+- `APC_TROPISM`: EBV=2.0, CMV=1.8, HIV=1.8, HCV=1.3, default=1.0
 
-**Providing host KFERQ motifs to SEAModule:**
-Run `find_kferq_motifs(host_seq)` from `motif_finder` first, then pass the motif strings as `provided_motifs` to `module.run()`. This is the integration bridge between the two modules.
+**`provided_motifs` format** (critical — differs from old context doc):
+```python
+# Correct format (0-based position):
+[{'motif': 'QLELK', 'position': 46, 'protein': 'protein2'}, ...]
+
+# Use kferq_to_sea_motifs() from motif_finder to produce this from motif_finder output.
+```
 
 ---
 
-## Orchestrator Design Intent
+## Orchestrator API
 
-### Inputs
 ```python
 orchestrate(
-    viral_seq:    str,
-    host_seq:     str,
-    virus_name:   str,
+    viral_seq:          str,
+    host_seq:           str,
+    virus_name:         str,
     viral_protein_name: str,
     host_protein_name:  str,
-    expression_dict: Optional[Dict[str, float]] = None,  # for CMA score
-    reference_dict:  Optional[Dict[str, float]] = None,
-    sea_config:   Optional[SEAConfig] = None,
+    expression_dict:    Optional[Dict[str, float]] = None,
+    reference_dict:     Optional[Dict[str, float]] = None,
+    sea_config:         Optional[SEAConfig]         = None,
+    min_identity:       float = 0.33,
+    window:             int   = 12,
+    step:               int   = 4,
+    max_pairs:          int   = 40,
 ) -> OrchestratorResult
 ```
 
 ### Processing Pipeline
-1. Run `find_all_degradation_motifs(viral_seq)` → viral degradation profile
-2. Run `find_all_degradation_motifs(host_seq)` → host degradation profile
-3. Extract `kferq` motif strings from host result → `provided_motifs`
-4. Run `check_cma_network_membership(host_protein_name)` → host CMA status
-5. Run `SEAModule.run(viral_seq, host_seq, ..., provided_motifs=...)` → SEA results
-6. If `expression_dict` provided → run `calculate_cma_score()`
-7. Merge into `OrchestratorResult` with ranked hits and a unified risk summary
+1. `find_all_degradation_motifs(viral_seq)` → viral degradation profile
+2. `find_all_degradation_motifs(host_seq)` → host degradation profile
+3. `kferq_to_sea_motifs(host_profile['kferq'], protein='protein2')` → SEA motif dicts
+4. `check_cma_network_membership(host_protein_name)` → host CMA status
+5. `SEAModule.run_from_sequences(viral_seq, host_seq, provided_motifs=..., ...)` → SEA results
+6. *(optional)* `calculate_cma_score(expression_dict)` if expression data supplied
+7. Merge → `OrchestratorResult` + `risk_summary`
 
-### Output
-`OrchestratorResult` should contain at minimum:
-- `sea_results` — ranked `List[SEAResult]` (top hits)
-- `viral_motif_profile` — output of `find_all_degradation_motifs` on viral sequence
-- `host_motif_profile` — output of `find_all_degradation_motifs` on host sequence
-- `host_cma_membership` — `check_cma_network_membership` result
-- `cma_score` — optional float if expression data was supplied
-- `risk_summary` — Dict with top architecture class, top final_score, n_super_epitope_hits, etc.
-- A `report()` method that writes a structured `.md` file suitable for OneDrive output
+### `OrchestratorResult`
+```python
+OrchestratorResult:
+  .sea_results          : List[SEAResult]    # sorted by final_sea_score desc
+  .viral_motif_profile  : Dict               # find_all_degradation_motifs on viral seq
+  .host_motif_profile   : Dict               # find_all_degradation_motifs on host seq
+  .host_cma_membership  : Optional[Dict]     # check_cma_network_membership result
+  .cma_score            : Optional[float]    # None if no expression data
+  .risk_summary         : Dict               # see keys below
+  .report(output_path)  : None               # writes .md file
+
+risk_summary keys:
+  top_architecture, top_sea_score, n_super_epitope, n_sandwiched,
+  n_pairs_scored, host_cma_member, host_cma_category, host_cma_direction,
+  cma_score, cma_score_display, n_viral_kferq, n_host_kferq,
+  viral_cma_category, host_cma_category_motif
+```
 
 ### Output Policy
-Code lives on GitHub. Reports and analysis outputs are written as `.md` files and pushed to OneDrive (not committed to GitHub). The `report()` method should produce a single well-structured `.md` file with consistent H1/H2/H3 headings so it drops cleanly into an Obsidian vault later.
+Code lives on GitHub. Reports are written as `.md` files via `result.report(path)` and
+pushed to OneDrive (not committed to GitHub). The report uses consistent H1/H2/H3
+headings suitable for an Obsidian vault.
 
 ---
 
-## Verified Test Case (for regression)
+## Verified Regression Test (HCV NS3/NS4A vs CYP2E1)
 
-**HCV NS3/NS4A (Q9WMX2) vs CYP2E1 (P05181)**
-- 7 host KFERQ motifs found: pos 46, 143, 145, 146, 340, 354, 355
-- 12 SEA pairs scored; top hit: E2 pos 675, SUPER_EPITOPE, final_score = 17.30
-- Second hit: Core pos 110, SUPER_EPITOPE, final_score = 10.96
+**Sequences:** HCV polyprotein Q9WMX2 (3,010 aa) vs CYP2E1 P05181 (493 aa)
 
-These values should be reproducible from the Orchestrator's output.
+| Metric | Expected | Actual |
+|--------|----------|--------|
+| Pairs scored | 12 | 12 |
+| Host KFERQ motifs (canonical) | ≥ 5 | 5 (pos 47, 123, 158, 341, 358) |
+| Top architecture | SUPER_EPITOPE | SUPER_EPITOPE |
+| Top SEA score | ≥ 17.0 | 17.2998 |
+| Top hit viral pos | 675 (E2) | 675 |
+| Second hit | SUPER_EPITOPE ≥ 10.0 | 10.6516 (pos 110, Core) |
 
----
+> **Note on KFERQ count:** The original context doc cited 7 motifs from a simplified
+> inline scanner. `motif_finder.find_kferq_motifs()` applies canonical KFERQ biochemistry
+> (Q-flanked with strict core pattern) and returns 5 validated motifs — the more
+> accurate count for CMA risk assessment.
 
-## What to Build First
-
-1. Define `OrchestratorResult` dataclass
-2. Implement `orchestrate()` following the pipeline above
-3. Write `orchestrator/tests/orchestrator_test.py` — regression against the HCV/CYP2E1 case
-4. Confirm top score ≥ 17.0, architecture = SUPER_EPITOPE
+Run regression:
+```bash
+cd /home/sandbox
+python orchestrator/tests/orchestrator_test.py
+```
 
 ---
 
@@ -222,7 +323,7 @@ These values should be reproducible from the Orchestrator's output.
 
 - Do **not** reimplement hinge/jammer/KFERQ logic — import and call the existing modules
 - `sys.path` pattern for test files: `sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))`
-  (tests live two levels below repo root at `orchestrator/tests/`)
 - GitHub PAT is available in the user's environment — ask the user to provide it for push operations
+- If expression data is unavailable, `cma_score` is `None` and noted in the report; does not block the pipeline
 - Mouse experiment is unrelated — do not mix with this work
-- If expression data is unavailable, `cma_score` should be `None` and noted in the report; do not block the pipeline
+- BioPython is required for `find_homologous_pairs()`: `pip install biopython`
