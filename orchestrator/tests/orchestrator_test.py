@@ -388,17 +388,36 @@ class TestOrchestratorSeqAlignerOnly(unittest.TestCase):
 class TestEpitopeProximityBonus(unittest.TestCase):
     """
     Tests for load_protein_knowledge_base, get_epitope_ranges, and
-    apply_epitope_proximity_bonus, plus integration tests that confirm
-    the bonus flows correctly through orchestrate().
+    apply_epitope_proximity_bonus, plus integration tests confirming the
+    bonus flows correctly through orchestrate().
 
-    Knowledge-base fixture: P05181 (CYP2E1), JHDN-5 epitope residues 113-135.
+    Unit tests use a synthetic KB fixture (_KB_FIXTURE) with a dummy accession
+    "PTEST" — they carry no assumptions about any real protein or UniProt entry.
+    Integration tests run the full pipeline against the validated Q9WMX2/P05181
+    dataset solely to confirm end-to-end behaviour; they are labelled as such.
     """
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
+    # ── Synthetic KB fixture (no real protein data) ───────────────────────────
+    # EP-LINEAR: a linear epitope at 1-based positions 50–70.
+    # EP-CONFORMATIONAL: null positions → must be skipped by get_epitope_ranges.
+    # EP-OVERLAP: overlaps EP-LINEAR to exercise the "bonus at most once" guard.
+    _KB_FIXTURE: dict = {
+        "proteins": {
+            "PTEST": {
+                "known_autoantibody_epitopes": [
+                    {"label": "EP-LINEAR",        "residue_start": 50,   "residue_end": 70},
+                    {"label": "EP-CONFORMATIONAL", "residue_start": None, "residue_end": None},
+                    {"label": "EP-OVERLAP",        "residue_start": 55,   "residue_end": 80},
+                ]
+            }
+        }
+    }
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _make_sea_result(rank=1, position2=0, score=15.0):
-        """Construct a minimal SEAResult for unit testing."""
+    def _make_sea_result(rank: int = 1, position2: int = 0, score: float = 15.0):
+        """Return a minimal, mutable SEAResult for unit testing."""
         from sea.sea_module import SEAResult
         r = SEAResult(
             rank=rank,
@@ -412,120 +431,132 @@ class TestEpitopeProximityBonus(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Load KB once; reuse test sequences fetched by earlier test classes."""
-        cls.kb = load_protein_knowledge_base()
+        """Fetch sequences once; load real KB once (for load_* tests only)."""
+        cls.real_kb = load_protein_knowledge_base()          # used only in load_* tests
         cls.viral_seq, cls.host_seq, cls.v3_hits = _get_test_data()
 
-    # ── load_protein_knowledge_base ──────────────────────────────────────────
+    # ── load_protein_knowledge_base ───────────────────────────────────────────
 
-    def test_load_kb_returns_dict(self):
-        """KB loads successfully and exposes the 'proteins' key."""
-        self.assertIsInstance(self.kb, dict)
-        self.assertIn("proteins", self.kb)
+    def test_load_kb_returns_dict_with_proteins_key(self):
+        """KB file loads without error and exposes the top-level 'proteins' key."""
+        self.assertIsInstance(self.real_kb, dict)
+        self.assertIn("proteins", self.real_kb)
 
-    def test_load_kb_missing_path_returns_empty(self):
-        """Non-existent path must return {} without raising."""
-        result = load_protein_knowledge_base("/nonexistent/path.json")
-        self.assertEqual(result, {})
+    def test_load_kb_missing_path_returns_empty_dict(self):
+        """A non-existent path must return {} without raising any exception."""
+        self.assertEqual(load_protein_knowledge_base("/nonexistent/path.json"), {})
 
-    # ── get_epitope_ranges ───────────────────────────────────────────────────
+    # ── get_epitope_ranges ────────────────────────────────────────────────────
 
-    def test_get_epitope_ranges_p05181(self):
-        """P05181 must include the JHDN-5 epitope (113, 135) with correct label."""
-        ranges = get_epitope_ranges(self.kb, "P05181")
-        self.assertGreaterEqual(len(ranges), 1)
-        labels = [label for (_, _, label) in ranges]
-        self.assertIn("JHDN-5", labels)
-        jhdn5 = next(t for t in ranges if t[2] == "JHDN-5")
-        self.assertEqual(jhdn5[0], 113)
-        self.assertEqual(jhdn5[1], 135)
+    def test_get_epitope_ranges_returns_linear_entries(self):
+        """Entries with valid start/end positions are returned as (start, end, label)."""
+        ranges = get_epitope_ranges(self._KB_FIXTURE, "PTEST")
+        labels = [lbl for (_, _, lbl) in ranges]
+        self.assertIn("EP-LINEAR", labels)
+        ep = next(t for t in ranges if t[2] == "EP-LINEAR")
+        self.assertEqual(ep[0], 50)
+        self.assertEqual(ep[1], 70)
 
-    def test_get_epitope_ranges_skips_null_positions(self):
-        """Conformational epitopes (null positions) must be excluded."""
-        ranges = get_epitope_ranges(self.kb, "P05181")
+    def test_get_epitope_ranges_skips_null_position_entries(self):
+        """Conformational (null-position) epitopes must not appear in the output."""
+        ranges = get_epitope_ranges(self._KB_FIXTURE, "PTEST")
+        labels = [lbl for (_, _, lbl) in ranges]
+        self.assertNotIn("EP-CONFORMATIONAL", labels)
         for (start, end, _) in ranges:
             self.assertIsNotNone(start)
             self.assertIsNotNone(end)
 
     def test_get_epitope_ranges_unknown_accession_returns_empty(self):
-        """Accession not in KB → empty list."""
-        self.assertEqual(get_epitope_ranges(self.kb, "PXXXXX"), [])
+        """An accession absent from the KB must return an empty list."""
+        self.assertEqual(get_epitope_ranges(self._KB_FIXTURE, "PXXXXXX"), [])
 
     def test_get_epitope_ranges_empty_kb_returns_empty(self):
-        """Empty KB dict → empty list."""
-        self.assertEqual(get_epitope_ranges({}, "P05181"), [])
+        """An empty KB dict must return an empty list regardless of accession."""
+        self.assertEqual(get_epitope_ranges({}, "PTEST"), [])
 
-    # ── apply_epitope_proximity_bonus ────────────────────────────────────────
+    # ── apply_epitope_proximity_bonus ─────────────────────────────────────────
 
-    def test_apply_bonus_in_range(self):
-        """position2=112 → host_pos_1based=113 → in JHDN-5 (113-135) → +2.0 bonus."""
-        result = self._make_sea_result(rank=1, position2=112, score=15.0)
+    def test_apply_bonus_when_anchor_inside_epitope(self):
+        """
+        position2=49 → 1-based host position 50 → inside EP-LINEAR (50-70).
+        Score must increase by the bonus and one hit record must be returned.
+        """
+        r = self._make_sea_result(position2=49, score=15.0)
         modified, hits = apply_epitope_proximity_bonus(
-            [result], "P05181", self.kb, bonus=2.0
+            [r], "PTEST", self._KB_FIXTURE, bonus=2.0
         )
         self.assertEqual(len(hits), 1)
         self.assertAlmostEqual(modified[0].final_sea_score, 17.0, places=3)
-        self.assertEqual(hits[0]["epitope_label"], "JHDN-5")
-        self.assertEqual(hits[0]["host_pos_1based"], 113)
+        self.assertEqual(hits[0]["epitope_label"], "EP-LINEAR")
+        self.assertEqual(hits[0]["host_pos_1based"], 50)
 
-    def test_apply_bonus_out_of_range(self):
-        """position2=9 → host_pos_1based=10 → outside JHDN-5 (113-135) → no bonus."""
-        result = self._make_sea_result(rank=1, position2=9, score=15.0)
+    def test_apply_no_bonus_when_anchor_outside_all_epitopes(self):
+        """
+        position2=9 → 1-based host position 10 → outside every epitope range.
+        Score must be unchanged and hits must be empty.
+        """
+        r = self._make_sea_result(position2=9, score=15.0)
         modified, hits = apply_epitope_proximity_bonus(
-            [result], "P05181", self.kb, bonus=2.0
+            [r], "PTEST", self._KB_FIXTURE, bonus=2.0
         )
         self.assertEqual(len(hits), 0)
         self.assertAlmostEqual(modified[0].final_sea_score, 15.0, places=3)
 
-    def test_apply_bonus_once_per_result(self):
-        """Bonus applied at most once per result even if anchor overlaps multiple ranges."""
-        kb_double = {
-            "proteins": {
-                "PTEST": {
-                    "known_autoantibody_epitopes": [
-                        {"label": "EP1", "residue_start": 110, "residue_end": 120},
-                        {"label": "EP2", "residue_start": 113, "residue_end": 130},
-                    ]
-                }
-            }
-        }
-        # position2=114 → 1-based=115 → inside both EP1 and EP2
-        result = self._make_sea_result(rank=1, position2=114, score=10.0)
+    def test_apply_bonus_at_most_once_per_result(self):
+        """
+        When an anchor falls inside multiple overlapping epitope ranges, the
+        bonus is applied exactly once (first matching range wins).
+        position2=54 → 1-based 55 → inside both EP-LINEAR (50-70) and EP-OVERLAP (55-80).
+        """
+        r = self._make_sea_result(position2=54, score=10.0)
         modified, hits = apply_epitope_proximity_bonus(
-            [result], "PTEST", kb_double, bonus=2.0
+            [r], "PTEST", self._KB_FIXTURE, bonus=2.0
         )
-        self.assertEqual(len(hits), 1, "Bonus must be applied exactly once")
+        self.assertEqual(len(hits), 1, "Bonus must be applied exactly once per result")
         self.assertAlmostEqual(modified[0].final_sea_score, 12.0, places=3)
 
-    def test_zero_bonus_no_effect(self):
-        """bonus=0.0 → scores unchanged, proximity_hits empty."""
-        result = self._make_sea_result(rank=1, position2=112, score=15.0)
+    def test_zero_bonus_leaves_scores_and_hits_unchanged(self):
+        """bonus=0.0 must be a complete no-op: scores unchanged, hits list empty."""
+        r = self._make_sea_result(position2=49, score=15.0)
         modified, hits = apply_epitope_proximity_bonus(
-            [result], "P05181", self.kb, bonus=0.0
+            [r], "PTEST", self._KB_FIXTURE, bonus=0.0
         )
         self.assertEqual(hits, [])
         self.assertAlmostEqual(modified[0].final_sea_score, 15.0, places=3)
 
-    def test_empty_results_list_returns_empty_hits(self):
-        """Empty sea_results list → proximity_hits empty, no error."""
-        _, hits = apply_epitope_proximity_bonus([], "P05181", self.kb, bonus=2.0)
+    def test_empty_sea_results_returns_empty_hits_without_error(self):
+        """An empty input list must return an empty hits list without raising."""
+        _, hits = apply_epitope_proximity_bonus([], "PTEST", self._KB_FIXTURE, bonus=2.0)
         self.assertEqual(hits, [])
 
-    def test_bonus_note_appended_to_result_notes(self):
-        """A boosted result must have an explanatory note appended to its notes list."""
-        result = self._make_sea_result(rank=1, position2=122, score=15.0)
-        apply_epitope_proximity_bonus([result], "P05181", self.kb, bonus=2.0)
+    def test_bonus_appends_explanatory_note_to_result(self):
+        """A boosted SEAResult must carry an 'Epitope proximity bonus' note."""
+        r = self._make_sea_result(position2=59, score=15.0)   # 1-based 60, in EP-LINEAR
+        apply_epitope_proximity_bonus([r], "PTEST", self._KB_FIXTURE, bonus=2.0)
         self.assertTrue(
-            any("Epitope proximity bonus" in n for n in result.notes),
-            "Expected 'Epitope proximity bonus' note in result.notes",
+            any("Epitope proximity bonus" in n for n in r.notes),
+            "Expected an 'Epitope proximity bonus' entry in result.notes",
         )
 
-    # ── Integration: orchestrate() ───────────────────────────────────────────
-
-    def test_integration_with_p05181(self):
+    def test_unknown_accession_in_kb_returns_no_hits(self):
         """
-        Full orchestrate() with host_accession='P05181' and bonus=2.0 must
-        produce at least one epitope-proximity hit and set bonus_applied > 0.
+        When host_accession is not in the KB, get_epitope_ranges returns [],
+        and apply_epitope_proximity_bonus must skip all bonuses cleanly.
+        """
+        r = self._make_sea_result(position2=49, score=15.0)
+        modified, hits = apply_epitope_proximity_bonus(
+            [r], "PXXXXXX", self._KB_FIXTURE, bonus=2.0
+        )
+        self.assertEqual(hits, [])
+        self.assertAlmostEqual(modified[0].final_sea_score, 15.0, places=3)
+
+    # ── Integration: orchestrate() (validated dataset regression) ────────────
+
+    def test_integration_bonus_applied_when_accession_supplied(self):
+        """
+        Integration regression (Q9WMX2 vs P05181 dataset):
+        Supplying a host_accession whose KB entry has mapped epitopes must
+        produce ≥1 proximity hit and set epitope_proximity_bonus_applied > 0.
         """
         res = orchestrate(
             viral_seq                = self.viral_seq,
@@ -535,22 +566,25 @@ class TestEpitopeProximityBonus(unittest.TestCase):
             host_protein_name        = "CYP2E1 P05181",
             mclachlan_hits           = self.v3_hits,
             mclachlan_min_composite  = 15.0,
-            seq_aligner_min_identity = 0.999,   # block seq_aligner for speed
+            seq_aligner_min_identity = 0.999,    # block seq_aligner for speed
             host_accession           = "P05181",
             epitope_proximity_bonus  = 2.0,
         )
         self.assertGreater(
             len(res.epitope_proximity_hits), 0,
-            "Expected ≥1 hit in JHDN-5 range (113-135) from known McLachlan pairs",
+            "Expected ≥1 SEA hit whose host anchor falls in a mapped KB epitope range",
         )
         self.assertEqual(res.epitope_proximity_bonus_applied, 2.0)
         self.assertGreater(
             res.sea_results[0].final_sea_score, 17.0,
-            "Top score must exceed 17.0 after bonus",
+            "Top score after bonus must exceed 17.0",
         )
 
-    def test_integration_no_accession_no_bonus(self):
-        """orchestrate() without host_accession → bonus not applied, hits empty."""
+    def test_integration_no_bonus_when_no_accession_supplied(self):
+        """
+        Integration regression: omitting host_accession must leave
+        epitope_proximity_bonus_applied at 0.0 and hits at [].
+        """
         res = orchestrate(
             viral_seq                = self.viral_seq,
             host_seq                 = self.host_seq,
