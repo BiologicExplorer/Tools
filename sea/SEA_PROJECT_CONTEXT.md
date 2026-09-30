@@ -1,20 +1,14 @@
 # SEA Project Bootstrap Context
 
-> **Purpose:** This document is the permanent bootstrap context for the Super-epitope
-> Architecture (SEA) Scanner project.  Paste the URL of this file into any new chat
-> to resume work immediately without loss of design history.
+> **Purpose:** This document is the permanent bootstrap context for the Super-epitope Architecture (SEA) Scanner project. Paste the URL of this file into any new chat to resume work immediately without loss of design history.
 >
-> **Status as of last update:** All tests passing; real-protein test complete (HCV vs CYP2E1).  
-> Repo restructured into per-project directories (`sea/`, `motif_finder/`, `cma_network/`, `orchestrator/`).  
-> Orchestrator bootstrap context written — see `orchestrator/ORCHESTRATOR_CONTEXT.md`.
+> **Status as of last update:** All tests passing; real-protein test complete (HCV vs CYP2E1). `find_homologous_pairs()` and `run_from_sequences()` added to `sea_module.py`. Orchestrator design documented in `orchestrator/ORCHESTRATOR_CONTEXT.md`.
 
 ---
 
 ## 1. Project Goal
 
-Build a Python bioinformatics module (`sea_module.py`) that scores paired viral / host
-homologous sequences for autoimmune disease risk by detecting coordinated structural
-features — the **Super-epitope Architecture (SEA)**.
+Build a Python bioinformatics module (`sea_module.py`) that scores paired viral / host homologous sequences for autoimmune disease risk by detecting coordinated structural features — the **Super-epitope Architecture (SEA)**.
 
 ---
 
@@ -52,17 +46,13 @@ Phosphorylatable Ser/Thr clusters flanking the homologous region.
 | **Tier 2** | ST, TS, TT | Lower score: `HINGE_TIER2_SCORE = 0.7` |
 
 ### 3.2 Jammers
-Dipeptide sequences that partially resist lysosomal proteolysis, enabling intact peptide
-loading onto MHC-II.  Based on EBV EBNA-1 GA-repeat biology (Levitskaya et al., 1995).
+Dipeptide sequences that partially resist lysosomal proteolysis, enabling intact peptide loading onto MHC-II. Based on EBV EBNA-1 GA-repeat biology (Levitskaya et al., 1995).
 
 **Current jammer set:** `GA/AG`, `GR/RG`, `GK/KG`
-> Note: this set can be expanded as more proteins are analyzed.  GA/GR/GK are
-> anchored in direct EBV evidence.
+> Note: this set can be expanded as more proteins are analyzed. GA/GR/GK are anchored in direct EBV evidence.
 
-**Distinction from EBNA-1 full repeat:**  
-EBNA-1's long GA repeat causes *complete* immune evasion (100× repeat → no
-presentation). SEA jammers cause *partial* resistance → presentation still occurs
-but the peptide survives intact → higher autoimmune risk.
+**Distinction from EBNA-1 full repeat:**
+EBNA-1's long GA repeat causes *complete* immune evasion (100× repeat → no presentation). SEA jammers cause *partial* resistance → presentation still occurs but the peptide survives intact → higher autoimmune risk.
 
 **Scoring model — action-potential amplitude analogy:**
 - A single jammer dipeptide contributes a baseline signal (micro-influence).
@@ -78,12 +68,10 @@ JAMMER_DENSITY_DECAY    = 0.015  # per-residue distance decay
 JAMMER_DENSITY_CAP      = 3.0    # maximum density score
 ```
 
-Amplification: a single GA dipeptide scores ≈ 0.12; a 30-residue GAGAGA… repeat
-scores ≈ 2.75 (≈ 23× amplification), approaching the cap of 3.0.
+Amplification: a single GA dipeptide scores ≈ 0.12; a 30-residue GAGAGA… repeat scores ≈ 2.75 (≈ 23× amplification), approaching the cap of 3.0.
 
 ### 3.3 CMA Degradation Motifs (KFERQ-like)
-Five-residue sequences recognised by HSPA8 (Hsc70) for chaperone-mediated autophagy
-routing.  Based on Cuervo lab work on KFERQ motif recognition and LAMP-2A translocation.
+Five-residue sequences recognised by HSPA8 (Hsc70) for chaperone-mediated autophagy routing. Based on Cuervo lab work on KFERQ motif recognition and LAMP-2A translocation.
 
 **Module rule (`_is_kferq_like`):**
 ```python
@@ -111,8 +99,7 @@ any(c in 'FILV' for c in pentamer)         # hydrophobic
 | `DEGRADATION_ONLY` | Deg motif, no hinge/jammer | 1.5 |
 | `NONE` | No features detected | 1.0 |
 
-**Sandwiched** = a feature (hinge OR jammer density > 0) detected on BOTH the
-N-terminal side AND the C-terminal side of the homologous region.
+**Sandwiched** = a feature (hinge OR jammer density > 0) detected on BOTH the N-terminal side AND the C-terminal side of the homologous region.
 
 ### 4.2 Scoring Formula
 
@@ -151,10 +138,10 @@ APC_TROPISM = {
 
 | File | Purpose |
 |------|---------|
-| `sea/sea_module.py` | Core scanner — all classes, scanners, scorer, `SEAModule` |
-| `sea/tests/sea_test.py` | Synthetic regression suite (8 architecture class tests + EBNA density amplification test) |
-| `sea/tests/sea_real_test.py` | Real-protein test: HCV (Q9WMX2) vs CYP2E1 (P05181) |
-| `sea/SEA_PROJECT_CONTEXT.md` | This file |
+| `sea_module.py` | Core scanner — all classes, scanners, scorer, `SEAModule`, `find_homologous_pairs()` |
+| `sea_test.py` | Synthetic regression suite (8 architecture class tests + EBNA density amplification test) |
+| `sea_real_test.py` | Real-protein test: HCV (Q9WMX2) vs CYP2E1 (P05181) |
+| `SEA_PROJECT_CONTEXT.md` | This file |
 
 ### 5.2 Core Classes
 
@@ -170,24 +157,106 @@ HingeScanner         — finds hinge patterns in flanking windows
 JammerScanner        — .scan() for discrete runs (diagnostics); .density_scan() for scoring
 DegradationMotifScanner — scans protein1 flanking region + merges provided protein2 motifs
 SEAScorer            — orchestrates all scanners, computes SEAResult
-SEAModule            — top-level interface (.run(), .report())
+SEAModule            — top-level interface (.run(), .run_from_sequences(), .report())
+find_homologous_pairs — module-level function; BioPython sliding-window aligner
 ```
 
-### 5.3 API: `SEAModule`
+### 5.3 API: `SEAModule.run()`
+
+The primary entry point when homologous pairs have already been identified by an external module (e.g., McLachlan cross-protein comparator, or the Orchestrator passing pre-ranked pairs).
 
 ```python
 module = SEAModule(virus_name='HCV', config=SEAConfig())
 
 results = module.run(
-    homologous_pairs    = [...],   # list of pair dicts (see §5.4)
+    homologous_pairs    = [...],   # list of pair dicts (see §5.6)
     autoimmune_diseases = [...],   # list of disease name strings
-    degradation_motifs  = [...],   # list of motif dicts (see §5.5)
+    degradation_motifs  = [...],   # list of motif dicts (see §5.7)
 )
 
-module.report(results)             # prints ranked summary
+module.report(results)             # prints ranked summary to stdout
 ```
 
-### 5.4 Pair Dict Schema
+Returns `List[SEAResult]` sorted by `final_sea_score` descending.
+
+### 5.4 API: `SEAModule.run_from_sequences()`
+
+Convenience entry point for the **Orchestrator workflow**: accepts raw sequences, runs `find_homologous_pairs()` internally, then forwards results to `.run()`. Requires BioPython.
+
+```python
+results = module.run_from_sequences(
+    viral_seq           = viral_protein_sequence,   # str — full viral protein
+    host_seq            = host_protein_sequence,    # str — full host protein
+    provided_motifs     = host_kferq_motifs,        # Optional[List[Dict]] — from motif_finder
+    autoimmune_diseases = ["autoimmune hepatitis"],  # Optional[List[str]]
+    min_identity        = 0.33,  # float — minimum ungapped identity (default 0.33)
+    window              = 12,    # int   — sliding window length in residues (default 12)
+    step                = 4,     # int   — stride between windows (default 4)
+    max_pairs           = 40,    # int   — cap on accepted pairs before scoring (default 40)
+)
+```
+
+**Parameter notes:**
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `viral_seq` | `str` | required | Full viral protein sequence |
+| `host_seq` | `str` | required | Full host protein sequence |
+| `provided_motifs` | `Optional[List[Dict]]` | `None` | Pre-computed KFERQ motifs from `motif_finder.find_kferq_motifs()`; use schema in §5.7 |
+| `autoimmune_diseases` | `Optional[List[str]]` | `None` | Candidate disease name strings; informational only |
+| `min_identity` | `float` | `0.33` | Forwarded to `find_homologous_pairs()` |
+| `window` | `int` | `12` | Forwarded to `find_homologous_pairs()` |
+| `step` | `int` | `4` | Forwarded to `find_homologous_pairs()` |
+| `max_pairs` | `int` | `40` | Forwarded to `find_homologous_pairs()` |
+
+Returns `List[SEAResult]` sorted by `final_sea_score` descending. Returns an empty list if no pairs meet the identity threshold.
+
+**Integration note for the Orchestrator:** Run `find_kferq_motifs(host_seq)` from `motif_finder` first, then pass the result (as `provided_motifs`) to `run_from_sequences()`. This is the integration bridge between `motif_finder` and `sea_module`.
+
+### 5.5 API: `find_homologous_pairs()`
+
+Module-level function (not a method). Slides a window over the host sequence and locally aligns each window against the full viral sequence using BioPython `PairwiseAligner`. Returns all accepted pairs as a list of dicts ready for `SEAModule.run()`.
+
+```python
+from sea_module import find_homologous_pairs
+
+pairs = find_homologous_pairs(
+    viral_seq    = viral_protein_sequence,  # str — full viral protein (query)
+    host_seq     = host_protein_sequence,   # str — full host protein (window source)
+    min_identity = 0.33,  # float — minimum ungapped identity (default 0.33)
+    window       = 12,    # int   — sliding window length in residues (default 12)
+    step         = 4,     # int   — stride between windows (default 4)
+    max_pairs    = 40,    # int   — cap on accepted pairs before sorting (default 40)
+)
+```
+
+**Alignment parameters (hardcoded):**
+```python
+PairwiseAligner(mode='local', match=2, mismatch=-1, open_gap=-5, extend_gap=-0.5)
+```
+
+**Acceptance criteria per pair:**
+- Aligned block length ≥ 6 residues
+- Ungapped identity ≥ `min_identity`
+- No previously accepted viral hit overlaps by > 50% (deduplication)
+
+**Return schema** — list of dicts, each containing:
+| Key | Type | Description |
+|-----|------|-------------|
+| `seq1` | `str` | Viral protein fragment (the homologous region) |
+| `seq2` | `str` | Host protein fragment |
+| `position1` | `int` | 0-based start in `viral_seq` |
+| `position2` | `int` | 0-based start in `host_seq` |
+| `protein1` | `str` | Full `viral_seq` (required by `SEAScorer` for flanking-region scans) |
+| `similarity_score` | `float` | Ungapped identity fraction (0–1); becomes `base_score` in SEA formula |
+| `rank` | `int` | 1-based rank by `similarity_score` descending |
+
+Raises `ImportError` if BioPython is not installed (`pip install biopython`).
+
+> **Design note:** Only `protein1` (viral) is stored in the pair dict. The `SEAScorer` scans the viral protein for hinges, jammers, and inline KFERQ motifs using the flanking region around `position1`. Host features are supplied separately via `provided_motifs`.
+
+### 5.6 Pair Dict Schema
+
+Full schema of a pair dict as consumed by `SEAModule.run()` and produced by `find_homologous_pairs()`:
 
 ```python
 {
@@ -201,10 +270,11 @@ module.report(results)             # prints ranked summary
 }
 ```
 
-> **Note:** Only `protein1` (viral) is scanned for hinges, jammers, and inline
-> KFERQ motifs.  Host protein features are supplied via `provided_motifs`.
+> **Note:** Only `protein1` (viral) is scanned for hinges, jammers, and inline KFERQ motifs. Host protein features are supplied via `provided_motifs`.
 
-### 5.5 Provided Motifs Dict Schema
+### 5.7 Provided Motifs Dict Schema
+
+Schema for KFERQ-like motif dicts supplied to `.run()` or `.run_from_sequences()` via the `degradation_motifs` / `provided_motifs` parameter:
 
 ```python
 {
@@ -214,9 +284,9 @@ module.report(results)             # prints ranked summary
 }
 ```
 
-Pass all KFERQ motifs found in the host (self) protein as `protein='protein2'`.
-The module computes their distance from the `position2` (host-side coordinate) of
-each pair, so they correctly represent proximity to the homologous region.
+Pass all KFERQ motifs found in the host (self) protein as `protein='protein2'`. The module computes their distance from the `position2` (host-side coordinate) of each pair, so they correctly represent proximity to the homologous region.
+
+**Obtaining host motifs:** use `find_kferq_motifs(host_seq)` from `motif_finder/motif_finder.py`, then convert to this schema before passing as `provided_motifs` to `run_from_sequences()`.
 
 ---
 
@@ -240,6 +310,7 @@ each pair, so they correctly represent proximity to the homologous region.
 - EBNA density amplification: single GA ≈ 0.12; 30-aa GAGAGA ≈ 2.75 → **22.9× amplification** ✓
 
 ### 7.2 Real-Protein Test (`sea_real_test.py`) — HCV vs CYP2E1
+
 Key findings from first run (12 pairs at ≥33% identity, 12-aa windows):
 
 | Rank | HCV Region | Pos1 | Pos2 | Sim | ArchClass | SEA Score |
@@ -250,12 +321,9 @@ Key findings from first run (12 pairs at ≥33% identity, 12-aa windows):
 | 4 | NS3 | 1466 | 166 | 83.3% | HINGE_AND_DEG | 8.51 |
 | 5 | NS5A | 2154 | 362 | 66.7% | HINGE_AND_DEG | 8.35 |
 
-11/12 regions SEA-positive.  Top hit: HCV E2 pos 675 (`PCSFTTL`) homologous to
-CYP2E1 pos 53 (`PKSFTRL`) — flanked by T2 hinges on both sides, nearest
-KFERQ motif (QLELK) at dist=7 in CYP2E1.
+11/12 regions SEA-positive. Top hit: HCV E2 pos 675 (`PCSFTTL`) homologous to CYP2E1 pos 53 (`PKSFTRL`) — flanked by T2 hinges on both sides, nearest KFERQ motif (QLELK) at dist=7 in CYP2E1.
 
-This is consistent with published reports of CYP2E1 autoantibodies in HCV-associated
-autoimmune hepatitis, particularly implicating E2 structural epitopes.
+This is consistent with published reports of CYP2E1 autoantibodies in HCV-associated autoimmune hepatitis, particularly implicating E2 structural epitopes.
 
 ---
 
@@ -272,22 +340,19 @@ autoimmune hepatitis, particularly implicating E2 structural epitopes.
 | Architecture detection uses `jammer_density_score > 0` for `has_jammer` | Consistent with density-first design; a single dipeptide produces density > 0 |
 | Sandwiched uses `n_jammer_density > 0` / `c_jammer_density > 0` per side | Consistent with density model; each side assessed independently |
 | Only `protein1` (viral) scanned for inline features | The virus is the interrogated entity; host features are supplied separately to avoid contaminating the viral architecture score |
+| `find_homologous_pairs()` stored as module-level function (not a method) | Allows external use without instantiating `SEAModule`; the Orchestrator or McLachlan pipeline can call it directly |
+| `run_from_sequences()` calls `find_homologous_pairs()` then `.run()` | Thin convenience wrapper; no new logic; keeps `.run()` the authoritative scoring entry point |
+| `provided_motifs` in `run_from_sequences()` accepts `List[Dict]` not `List[str]` | Consistent with the full motif dict schema (§5.7); the Orchestrator passes the full dict from `motif_finder` |
 
 ---
 
 ## 9. Next Steps / Pending Work
 
-- [x] **`motif_finder/motif_finder.py`** — complete; covers KFERQ, LIR, D-box, KEN, N/C-degrons, PEST.
-- [x] **`cma_network/cma_network.py`** — complete; covers CMA network membership lookup and activation scoring.
-- [x] **Orchestrator context written** — `orchestrator/ORCHESTRATOR_CONTEXT.md`; bootstrap doc for the next chat thread.
-- [ ] **Build `orchestrator/orchestrator.py`** — routes viral/host pair through all three modules; returns `OrchestratorResult` with ranked hits and a `.report()` method for OneDrive `.md` output.  See `ORCHESTRATOR_CONTEXT.md` for full design spec and API contracts.
-- [ ] **Expand jammer set:** As more viral proteins are analysed, additional G?/?G
-  dipeptides may be added to `JammerScanner._UNIT_SET`.
-- [ ] **BLOSUM62 scoring:** Consider adding an optional BLOSUM62-based similarity metric
-  to the pair finder for physicochemical (vs. identity-only) homology.
-- [ ] **Lower-identity region analysis:** The 33% identity threshold captures some molecular
-  mimicry candidates; explore 25% threshold with BLOSUM62 normalisation.
-- [ ] **Obsidian integration:** OneDrive `.md` outputs from `report()` will become Obsidian vault notes; consistent H1/H2/H3 headings matter.
+- [ ] **Build Orchestrator:** `orchestrator/orchestrator.py` — single entry point that routes viral + host sequences through all three modules and returns a unified `OrchestratorResult`. Full design spec in `orchestrator/ORCHESTRATOR_CONTEXT.md`.
+- [ ] **Orchestrator test:** `orchestrator/tests/orchestrator_test.py` — regression against HCV/CYP2E1 case; confirm top score ≥ 17.0, architecture = SUPER_EPITOPE.
+- [ ] **Expand jammer set:** As more viral proteins are analysed, additional G?/?G dipeptides may be added to `JammerScanner._UNIT_SET`.
+- [ ] **BLOSUM62 scoring:** Consider adding an optional BLOSUM62-based similarity metric to `find_homologous_pairs()` for physicochemical (vs. identity-only) homology.
+- [ ] **Lower-identity region analysis:** The 33% identity threshold captures some molecular mimicry candidates; explore 25% threshold with BLOSUM62 normalisation.
 
 ---
 
@@ -295,14 +360,9 @@ autoimmune hepatitis, particularly implicating E2 structural epitopes.
 
 1. Point the new chat at this document (GitHub URL or paste contents).
 2. Reference files by path:
-   - `sea/sea_module.py` — full SEA scanner
-   - `sea/tests/sea_test.py` — regression + EBNA density tests
-   - `sea/tests/sea_real_test.py` — HCV vs CYP2E1 real test
-3. Run `python sea/tests/sea_test.py` to verify the sandbox is intact.
-4. Continue from §9 (Next Steps) or describe your next goal.
-
-**To bootstrap the Orchestrator build thread specifically:**
-```
-Read https://raw.githubusercontent.com/BiologicExplorer/Tools/main/orchestrator/ORCHESTRATOR_CONTEXT.md
-and use it to bootstrap this chat for Orchestrator development.
-```
+   - `/home/sandbox/sea_module.py` — full SEA scanner (960 lines)
+   - `/home/sandbox/sea_test.py` — regression + EBNA density tests
+   - `/home/sandbox/sea_real_test.py` — HCV vs CYP2E1 real test
+3. Run `python sea_test.py` to verify the sandbox is intact.
+4. For Orchestrator work, also read `orchestrator/ORCHESTRATOR_CONTEXT.md`.
+5. Continue from §9 (Next Steps) or describe your next goal.
