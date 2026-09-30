@@ -21,6 +21,22 @@ Read this file, run the self-test, and you are ready.
 
 ---
 
+## Related Tool — CMA Network Lookup & Scoring
+
+For pathway-level analysis (gene membership in the CMA regulatory network and
+CMA activation scoring from expression data), see the **separate** companion tool:
+
+| File | Raw URL |
+|---|---|
+| `cma_network.py` | `https://raw.githubusercontent.com/BiologicExplorer/Tools/main/cma_network.py` |
+| `CMA_NETWORK_KNOWLEDGE.md` | `https://raw.githubusercontent.com/BiologicExplorer/Tools/main/CMA_NETWORK_KNOWLEDGE.md` |
+
+`cma_network.py` and `motif_finder.py` are intentionally separate: `motif_finder.py`
+operates on protein sequences (residue level); `cma_network.py` operates on gene
+names and expression datasets (pathway level).
+
+---
+
 ## The Script
 
 **Location:** `BiologicExplorer/Tools` → `motif_finder.py`  
