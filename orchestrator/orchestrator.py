@@ -16,13 +16,15 @@ Pipeline
 5b. Source B: mclachlan_to_pairs()        → mclachlan pairs   [if mclachlan_hits supplied]
 6.  Merge + _dedup_pairs(tolerance=4)    → merged pairs, re-ranked
 7.  SEAModule.run(merged_pairs, ...)      → sea_results
+7b. apply_epitope_proximity_bonus()       → bonus scores for hits in known epitopes
 8.  Optional calculate_cma_score()        → cma_score
 9.  Build OrchestratorResult + risk_summary
 
 Usage
 -----
 >>> from orchestrator.orchestrator import orchestrate
->>> result = orchestrate(viral_seq, host_seq, "HCV", "polyprotein", "CYP2E1")
+>>> result = orchestrate(viral_seq, host_seq, "HCV", "polyprotein", "CYP2E1",
+...                      host_accession="P05181")
 >>> print(result.risk_summary)
 >>> result.report("/home/sandbox/reports/hcv_cyp2e1_sea.md")
 
@@ -37,7 +39,7 @@ import sys
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── sys.path: resolve sibling modules under /home/sandbox/ ───────────────────
 _REPO_ROOT = os.path.normpath(
@@ -96,6 +98,11 @@ class OrchestratorResult:
     risk_summary:        Dict               = field(default_factory=dict)
     pair_source_counts:  Dict[str, int]     = field(default_factory=dict)
 
+    # ── Epitope proximity bonus ───────────────────────────────────────────────
+    host_accession:                  Optional[str]  = None
+    epitope_proximity_hits:          List[Dict]     = field(default_factory=list)
+    epitope_proximity_bonus_applied: float          = 0.0
+
     # ── Meta ─────────────────────────────────────────────────────────────────
     timestamp:           str                = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -115,6 +122,146 @@ class OrchestratorResult:
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         return os.path.abspath(output_path)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  KNOWLEDGE BASE
+# ════════════════════════════════════════════════════════════════════════════
+
+_DEFAULT_KB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "protein_knowledge_base.json",
+)
+
+
+def load_protein_knowledge_base(path: Optional[str] = None) -> Dict:
+    """
+    Load ``protein_knowledge_base.json`` from *path*.
+
+    Defaults to ``orchestrator/protein_knowledge_base.json`` (the file
+    co-located with this module).
+
+    A missing or malformed file is **non-fatal**: the function returns ``{}``
+    so the pipeline continues without any epitope proximity bonuses.
+
+    Parameters
+    ----------
+    path : explicit path to the JSON file, or None to use the default.
+
+    Returns
+    -------
+    Parsed dict from the JSON file, or {} on any failure.
+    """
+    resolved = path if path is not None else _DEFAULT_KB_PATH
+    if not os.path.exists(resolved):
+        return {}
+    try:
+        with open(resolved, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def get_epitope_ranges(
+    kb_data:   Dict,
+    accession: str,
+) -> List[Tuple[int, int, str]]:
+    """
+    Extract mapped autoantibody epitope ranges for *accession* from *kb_data*.
+
+    Only entries with non-null ``residue_start`` **and** ``residue_end`` are
+    included (conformational epitopes with null positions are skipped).
+
+    Parameters
+    ----------
+    kb_data   : loaded knowledge base dict (from load_protein_knowledge_base)
+    accession : UniProt primary accession (e.g. "P05181")
+
+    Returns
+    -------
+    List of ``(residue_start, residue_end, label)`` tuples, 1-based inclusive.
+    Empty list if the accession is absent or has no mapped linear epitopes.
+    """
+    entry    = kb_data.get("proteins", {}).get(accession, {})
+    epitopes = entry.get("known_autoantibody_epitopes", [])
+    ranges: List[Tuple[int, int, str]] = []
+    for ep in epitopes:
+        start = ep.get("residue_start")
+        end   = ep.get("residue_end")
+        label = ep.get("label", "unknown")
+        if start is not None and end is not None:
+            ranges.append((int(start), int(end), label))
+    return ranges
+
+
+def apply_epitope_proximity_bonus(
+    sea_results:    List[Any],   # List[SEAResult]
+    host_accession: str,
+    kb_data:        Dict,
+    bonus:          float,
+) -> Tuple[List[Any], List[Dict]]:
+    """
+    Add *bonus* to the ``final_sea_score`` of every SEAResult whose host
+    anchor lands inside a known autoantibody epitope for *host_accession*.
+
+    "Host anchor" is ``result.position2`` (0-based).  It is converted to a
+    1-based residue position and checked against each ``(start, end)`` range
+    from the knowledge base.  The bonus is applied **at most once per
+    result** even if the anchor overlaps multiple epitope ranges (first
+    matching range wins).  Each boosted result also gets an explanatory
+    entry appended to its ``notes`` list.
+
+    After all bonuses are applied, *sea_results* is re-sorted by
+    ``final_sea_score`` descending (in place).
+
+    Parameters
+    ----------
+    sea_results    : list of SEAResult objects — **mutated in place**
+    host_accession : UniProt accession for the host protein
+    kb_data        : knowledge base dict (from load_protein_knowledge_base)
+    bonus          : score delta (e.g. 2.0).  Pass 0.0 to disable.
+
+    Returns
+    -------
+    (modified_sea_results, proximity_hits)
+        modified_sea_results : input list, re-sorted by final_sea_score DESC
+        proximity_hits       : list of dicts — one per boosted result —
+                               with keys: rank, seq1, seq2, host_pos_1based,
+                               epitope_label, epitope_range, bonus_applied,
+                               new_score
+    """
+    if bonus == 0.0 or not sea_results:
+        return sea_results, []
+
+    epitope_ranges = get_epitope_ranges(kb_data, host_accession)
+    if not epitope_ranges:
+        return sea_results, []
+
+    proximity_hits: List[Dict] = []
+
+    for result in sea_results:
+        host_pos_1based = result.position2 + 1   # 0-based → 1-based
+        for (ep_start, ep_end, ep_label) in epitope_ranges:
+            if ep_start <= host_pos_1based <= ep_end:
+                result.final_sea_score = round(result.final_sea_score + bonus, 4)
+                result.notes.append(
+                    f"Epitope proximity bonus +{bonus:.2f}: host pos {host_pos_1based} "
+                    f"in known epitope '{ep_label}' ({ep_start}–{ep_end})"
+                )
+                proximity_hits.append({
+                    "rank":            result.rank,
+                    "seq1":            result.seq1,
+                    "seq2":            result.seq2,
+                    "host_pos_1based": host_pos_1based,
+                    "epitope_label":   ep_label,
+                    "epitope_range":   f"{ep_start}–{ep_end}",
+                    "bonus_applied":   bonus,
+                    "new_score":       result.final_sea_score,
+                })
+                break   # at most one bonus per result
+
+    sea_results.sort(key=lambda r: r.final_sea_score, reverse=True)
+    return sea_results, proximity_hits
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -251,16 +398,18 @@ def _build_risk_summary(
 
     if not sea_results:
         return {
-            "top_architecture":   "NONE",
-            "top_final_score":    0.0,
-            "n_super_epitope":    0,
-            "n_sandwiched":       0,
-            "n_pairs_scored":     0,
-            "host_is_cma_member": False,
-            "host_cma_category":  None,
-            "viral_n_kferq":      0,
-            "host_n_kferq":       0,
-            "overall_risk":       "LOW",
+            "top_architecture":        "NONE",
+            "top_final_score":         0.0,
+            "n_super_epitope":         0,
+            "n_sandwiched":            0,
+            "n_pairs_scored":          0,
+            "host_is_cma_member":      False,
+            "host_cma_category":       None,
+            "viral_n_kferq":           0,
+            "host_n_kferq":            0,
+            "overall_risk":            "LOW",
+            "n_epitope_proximity_hits": 0,
+            "epitope_proximity_bonus": 0.0,
         }
 
     top     = sea_results[0]
@@ -290,19 +439,22 @@ def _build_risk_summary(
         overall_risk = "HIGH"
 
     return {
-        "top_architecture":   top_arc,
-        "top_final_score":    round(score, 4),
-        "n_super_epitope":    supers,
-        "n_sandwiched":       sands,
-        "n_pairs_scored":     len(sea_results),
-        "host_is_cma_member": host_cma_member,
-        "host_cma_category":  host_cma_category,
-        "viral_n_kferq":      v_kferq,
-        "host_n_kferq":       h_kferq,
-        "overall_risk":       overall_risk,
-        "cma_score":          (
+        "top_architecture":        top_arc,
+        "top_final_score":         round(score, 4),
+        "n_super_epitope":         supers,
+        "n_sandwiched":            sands,
+        "n_pairs_scored":          len(sea_results),
+        "host_is_cma_member":      host_cma_member,
+        "host_cma_category":       host_cma_category,
+        "viral_n_kferq":           v_kferq,
+        "host_n_kferq":            h_kferq,
+        "overall_risk":            overall_risk,
+        "cma_score":               (
             cma_score_result.get("cma_score") if cma_score_result else None
         ),
+        # Populated in orchestrate() after apply_epitope_proximity_bonus()
+        "n_epitope_proximity_hits": 0,
+        "epitope_proximity_bonus":  0.0,
     }
 
 
@@ -312,16 +464,19 @@ def _build_risk_summary(
 
 def _build_report_lines(result: OrchestratorResult) -> List[str]:
     """Return a list of Markdown lines for the Orchestrator report."""
-    rs = result.risk_summary
+    rs  = result.risk_summary
     psc = result.pair_source_counts
 
     lines: List[str] = []
     a = lines.append   # shorthand
 
+    # ── Header ────────────────────────────────────────────────────────────
     a(f"# SEA Orchestrator Report: {result.virus_name} vs {result.host_protein_name}")
     a(f"")
     a(f"**Generated:** {result.timestamp}")
-    a(f"**Viral protein:** {result.viral_protein_name}  |  **Host protein:** {result.host_protein_name}")
+    host_id = f" (`{result.host_accession}`)" if result.host_accession else ""
+    a(f"**Viral protein:** {result.viral_protein_name}  |  "
+      f"**Host protein:** {result.host_protein_name}{host_id}")
     a(f"")
 
     # ── Risk Summary ──────────────────────────────────────────────────────
@@ -340,6 +495,31 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a(f"| Host KFERQ motifs | {rs.get('host_n_kferq', 0)} |")
     if rs.get("cma_score") is not None:
         a(f"| CMA Score | {rs['cma_score']:.4f} |")
+    n_ep = rs.get("n_epitope_proximity_hits", 0)
+    ep_b = rs.get("epitope_proximity_bonus", 0.0)
+    if result.host_accession:
+        a(f"| Epitope Proximity Bonus | +{ep_b:.2f} × {n_ep} hit(s) |")
+    a("")
+
+    # ── Epitope Proximity Bonus ───────────────────────────────────────────
+    a("## Epitope Proximity Bonus")
+    a("")
+    if result.epitope_proximity_hits:
+        a(f"**Host accession:** `{result.host_accession}`  |  "
+          f"**Bonus per hit:** +{result.epitope_proximity_bonus_applied:.2f}  |  "
+          f"**Hits boosted:** {len(result.epitope_proximity_hits)}")
+        a("")
+        a("| Rank | Viral Seq | Host Seq | Host Pos | Epitope | Range | New Score |")
+        a("|------|-----------|----------|----------|---------|-------|-----------|")
+        for h in result.epitope_proximity_hits:
+            a(f"| {h['rank']} | `{h['seq1']}` | `{h['seq2']}` | "
+              f"{h['host_pos_1based']} | {h['epitope_label']} | "
+              f"{h['epitope_range']} | {h['new_score']:.4f} |")
+    else:
+        a("*No hits received an epitope proximity bonus.*")
+        if result.host_accession:
+            a(f"*(Host accession: `{result.host_accession}`, "
+              f"bonus configured: {result.epitope_proximity_bonus_applied:.2f})*")
     a("")
 
     # ── Pair Source Counts ────────────────────────────────────────────────
@@ -402,7 +582,7 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         a(f"*{result.host_protein_name} is not a known CMA network member.*")
     a("")
 
-    # ── Notes on all Super-Epitopes ───────────────────────────────────────
+    # ── Super-Epitope Details ─────────────────────────────────────────────
     super_hits = [r for r in result.sea_results if r.is_super_epitope]
     if super_hits:
         a("## Super-Epitope Details")
@@ -454,6 +634,10 @@ def orchestrate(
     reference_dict:            Optional[Dict[str, float]] = None,
     # SEA config override
     sea_config:                Optional[SEAConfig] = None,
+    # Knowledge base / epitope proximity bonus
+    host_accession:            Optional[str]   = None,
+    kb_path:                   Optional[str]   = None,
+    epitope_proximity_bonus:   float           = 2.0,
 ) -> OrchestratorResult:
     """
     Run the full SEA Orchestrator pipeline.
@@ -476,6 +660,17 @@ def orchestrate(
     expression_dict         : gene expression values for CMA score (optional)
     reference_dict          : reference expression values (optional)
     sea_config              : custom SEAConfig (uses defaults if None)
+    host_accession          : UniProt primary accession of the host protein
+                              (e.g. 'P05181').  When supplied, the pipeline
+                              loads protein_knowledge_base.json and adds
+                              epitope_proximity_bonus to any SEAResult whose
+                              host anchor falls inside a known autoantibody
+                              epitope range.  Pass None to skip this step.
+    kb_path                 : path to protein_knowledge_base.json.  Defaults
+                              to orchestrator/protein_knowledge_base.json.
+    epitope_proximity_bonus : score bonus added when a hit lands in a known
+                              epitope (default 2.0).  Set 0.0 to disable while
+                              still supplying host_accession.
 
     Returns
     -------
@@ -557,6 +752,17 @@ def orchestrate(
     )
     # sea_results is already sorted by final_sea_score DESC by SEAModule.run()
 
+    # ── Step 7b: Epitope proximity bonus ──────────────────────────────────
+    proximity_hits: List[Dict] = []
+    if host_accession is not None and epitope_proximity_bonus != 0.0:
+        kb_data = load_protein_knowledge_base(kb_path)
+        sea_results, proximity_hits = apply_epitope_proximity_bonus(
+            sea_results,
+            host_accession,
+            kb_data,
+            epitope_proximity_bonus,
+        )
+
     # ── Step 8: Optional CMA score ────────────────────────────────────────
     cma_score_result: Optional[Dict] = None
     cma_score_val:    Optional[float] = None
@@ -575,16 +781,26 @@ def orchestrate(
         host_profile,
         cma_score_result,
     )
+    # Patch in epitope proximity stats (not available inside _build_risk_summary)
+    risk_summary["n_epitope_proximity_hits"] = len(proximity_hits)
+    risk_summary["epitope_proximity_bonus"]  = (
+        epitope_proximity_bonus if host_accession is not None else 0.0
+    )
 
     return OrchestratorResult(
-        virus_name          = virus_name,
-        viral_protein_name  = viral_protein_name,
-        host_protein_name   = host_protein_name,
-        sea_results         = sea_results,
-        viral_motif_profile = viral_profile,
-        host_motif_profile  = host_profile,
-        host_cma_membership = host_cma,
-        cma_score           = cma_score_val,
-        risk_summary        = risk_summary,
-        pair_source_counts  = pair_source_counts,
+        virus_name                       = virus_name,
+        viral_protein_name               = viral_protein_name,
+        host_protein_name                = host_protein_name,
+        sea_results                      = sea_results,
+        viral_motif_profile              = viral_profile,
+        host_motif_profile               = host_profile,
+        host_cma_membership              = host_cma,
+        cma_score                        = cma_score_val,
+        risk_summary                     = risk_summary,
+        pair_source_counts               = pair_source_counts,
+        host_accession                   = host_accession,
+        epitope_proximity_hits           = proximity_hits,
+        epitope_proximity_bonus_applied  = (
+            epitope_proximity_bonus if host_accession is not None else 0.0
+        ),
     )
