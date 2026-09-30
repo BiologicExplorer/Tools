@@ -66,7 +66,10 @@ except ImportError as exc:  # pragma: no cover
     )
 
 try:
-    from sea.sea_module import SEAModule, SEAConfig, find_homologous_pairs
+    from sea.sea_module import (
+        SEAModule, SEAConfig, find_homologous_pairs,
+        HingeScanner, JammerScanner, HingeTier,
+    )
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         f"sea.sea_module not found on sys.path={sys.path!r}\n"
@@ -102,6 +105,10 @@ class OrchestratorResult:
     host_accession:                  Optional[str]  = None
     epitope_proximity_hits:          List[Dict]     = field(default_factory=list)
     epitope_proximity_bonus_applied: float          = 0.0
+
+    # ── Hinge / jammer full-sequence profiles ─────────────────────────────────
+    viral_hinge_jammer_profile:  Dict  = field(default_factory=dict)
+    host_hinge_jammer_profile:   Dict  = field(default_factory=dict)
 
     # ── Meta ─────────────────────────────────────────────────────────────────
     timestamp:           str                = field(
@@ -268,6 +275,56 @@ def apply_epitope_proximity_bonus(
 #  McLACHLAN CONVERSION
 # ════════════════════════════════════════════════════════════════════════════
 
+def _scan_hinge_jammer_profile(seq: str, cfg: Optional[SEAConfig] = None) -> Dict:
+    """
+    Full-sequence hinge and jammer scan.
+
+    Slides a 7-residue target window across *seq* with step=7, scanning
+    the flanking PROXIMITY_WINDOW on each side.  Unique matches are
+    de-duplicated by (position, sequence) so each site is counted once.
+
+    Returns a dict with keys:
+        hinges_t1  : List[HingeMatch]  — Tier 1 (phosphoserine-type)
+        hinges_t2  : List[HingeMatch]  — Tier 2 (Ser/Thr flexible)
+        jammers    : List[JammerMatch]
+        n_hinges_t1, n_hinges_t2, n_jammers  : int counts
+    """
+    if cfg is None:
+        cfg = SEAConfig()
+
+    hs  = HingeScanner()
+    js  = JammerScanner()
+    win = cfg.PROXIMITY_WINDOW
+    step = 7
+
+    seen_h: Dict[tuple, Any] = {}
+    seen_j: Dict[tuple, Any] = {}
+
+    for start in range(0, len(seq), step):
+        end = start + step
+        for h in hs.scan(seq, start, end, win, cfg):
+            key = (h.position, h.sequence, h.tier)
+            if key not in seen_h:
+                seen_h[key] = h
+        for j in js.scan(seq, start, end, win, cfg):
+            key = (j.position, j.sequence)
+            if key not in seen_j:
+                seen_j[key] = j
+
+    hinges_t1 = [h for h in seen_h.values() if h.tier == HingeTier.TIER1]
+    hinges_t2 = [h for h in seen_h.values() if h.tier == HingeTier.TIER2]
+    jammers   = list(seen_j.values())
+
+    return {
+        "hinges_t1":   hinges_t1,
+        "hinges_t2":   hinges_t2,
+        "jammers":     jammers,
+        "n_hinges_t1": len(hinges_t1),
+        "n_hinges_t2": len(hinges_t2),
+        "n_jammers":   len(jammers),
+    }
+
+
 def mclachlan_to_pairs(
     mclachlan_hits:    List[Dict],
     viral_seq:         str,
@@ -388,13 +445,18 @@ def _dedup_pairs(pairs: List[Dict], tolerance: int = 4) -> List[Dict]:
 # ════════════════════════════════════════════════════════════════════════════
 
 def _build_risk_summary(
-    sea_results:       List[Any],
-    host_cma:          Optional[Dict],
-    viral_profile:     Dict,
-    host_profile:      Dict,
-    cma_score_result:  Optional[Dict],
+    sea_results:           List[Any],
+    host_cma:              Optional[Dict],
+    viral_profile:         Dict,
+    host_profile:          Dict,
+    cma_score_result:      Optional[Dict],
+    viral_hj_profile:      Optional[Dict] = None,
+    host_hj_profile:       Optional[Dict] = None,
 ) -> Dict:
     """Build a concise risk summary dict from Orchestrator outputs."""
+
+    vhj = viral_hj_profile or {}
+    hhj = host_hj_profile  or {}
 
     if not sea_results:
         return {
@@ -407,6 +469,12 @@ def _build_risk_summary(
             "host_cma_category":       None,
             "viral_n_kferq":           0,
             "host_n_kferq":            0,
+            "viral_n_hinges_t1":       vhj.get("n_hinges_t1", 0),
+            "viral_n_hinges_t2":       vhj.get("n_hinges_t2", 0),
+            "viral_n_jammers":         vhj.get("n_jammers", 0),
+            "host_n_hinges_t1":        hhj.get("n_hinges_t1", 0),
+            "host_n_hinges_t2":        hhj.get("n_hinges_t2", 0),
+            "host_n_jammers":          hhj.get("n_jammers", 0),
             "overall_risk":            "LOW",
             "n_epitope_proximity_hits": 0,
             "epitope_proximity_bonus": 0.0,
@@ -448,6 +516,12 @@ def _build_risk_summary(
         "host_cma_category":       host_cma_category,
         "viral_n_kferq":           v_kferq,
         "host_n_kferq":            h_kferq,
+        "viral_n_hinges_t1":       vhj.get("n_hinges_t1", 0),
+        "viral_n_hinges_t2":       vhj.get("n_hinges_t2", 0),
+        "viral_n_jammers":         vhj.get("n_jammers", 0),
+        "host_n_hinges_t1":        hhj.get("n_hinges_t1", 0),
+        "host_n_hinges_t2":        hhj.get("n_hinges_t2", 0),
+        "host_n_jammers":          hhj.get("n_jammers", 0),
         "overall_risk":            overall_risk,
         "cma_score":               (
             cma_score_result.get("cma_score") if cma_score_result else None
@@ -459,16 +533,27 @@ def _build_risk_summary(
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  REPORT BUILDER
+#  REPORT BUILDER  (5-Phase Architecture)
 # ════════════════════════════════════════════════════════════════════════════
 
+def _arch_distribution(sea_results: List[Any]) -> Dict[str, int]:
+    """Count SEA results by architecture class name."""
+    dist: Dict[str, int] = {}
+    for r in sea_results:
+        name = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
+        dist[name] = dist.get(name, 0) + 1
+    return dict(sorted(dist.items(), key=lambda x: -x[1]))
+
+
 def _build_report_lines(result: OrchestratorResult) -> List[str]:
-    """Return a list of Markdown lines for the Orchestrator report."""
+    """Return a list of Markdown lines for the phased Orchestrator report."""
     rs  = result.risk_summary
     psc = result.pair_source_counts
+    vhj = result.viral_hinge_jammer_profile  or {}
+    hhj = result.host_hinge_jammer_profile   or {}
 
     lines: List[str] = []
-    a = lines.append   # shorthand
+    a = lines.append
 
     # ── Header ────────────────────────────────────────────────────────────
     a(f"# SEA Orchestrator Report: {result.virus_name} vs {result.host_protein_name}")
@@ -478,12 +563,19 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a(f"**Viral protein:** {result.viral_protein_name}  |  "
       f"**Host protein:** {result.host_protein_name}{host_id}")
     a(f"")
+    a("---")
+    a("")
 
-    # ── Risk Summary ──────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════
+    # RISK SUMMARY  (top-of-report — synthesised from all phases)
+    # ════════════════════════════════════════════════════════════
     a("## Risk Summary")
     a("")
-    a(f"| Field | Value |")
-    a(f"|-------|-------|")
+    n_ep = rs.get("n_epitope_proximity_hits", 0)
+    ep_b = rs.get("epitope_proximity_bonus",  0.0)
+    ep_cell = f"+{ep_b:.2f} × {n_ep} hit(s)" if result.host_accession else "n/a"
+    a("| Field | Value |")
+    a("|-------|-------|")
     a(f"| Overall Risk | **{rs.get('overall_risk', 'N/A')}** |")
     a(f"| Top Architecture | {rs.get('top_architecture', 'N/A')} |")
     a(f"| Top Final Score | {rs.get('top_final_score', 0.0):.4f} |")
@@ -491,18 +583,120 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a(f"| Sandwiched Hits | {rs.get('n_sandwiched', 0)} |")
     a(f"| Pairs Scored | {rs.get('n_pairs_scored', 0)} |")
     a(f"| Host CMA Member | {rs.get('host_is_cma_member', False)} ({rs.get('host_cma_category', 'N/A')}) |")
-    a(f"| Viral KFERQ motifs | {rs.get('viral_n_kferq', 0)} |")
-    a(f"| Host KFERQ motifs | {rs.get('host_n_kferq', 0)} |")
+    a(f"| Viral KFERQ Motifs | {rs.get('viral_n_kferq', 0)} |")
+    a(f"| Host KFERQ Motifs | {rs.get('host_n_kferq', 0)} |")
+    a(f"| Viral Hinges (T1 / T2) | {vhj.get('n_hinges_t1', 0)} / {vhj.get('n_hinges_t2', 0)} |")
+    a(f"| Viral Jammers | {vhj.get('n_jammers', 0)} |")
+    a(f"| Host Hinges (T1 / T2) | {hhj.get('n_hinges_t1', 0)} / {hhj.get('n_hinges_t2', 0)} |")
+    a(f"| Host Jammers | {hhj.get('n_jammers', 0)} |")
     if rs.get("cma_score") is not None:
         a(f"| CMA Score | {rs['cma_score']:.4f} |")
-    n_ep = rs.get("n_epitope_proximity_hits", 0)
-    ep_b = rs.get("epitope_proximity_bonus", 0.0)
-    if result.host_accession:
-        a(f"| Epitope Proximity Bonus | +{ep_b:.2f} × {n_ep} hit(s) |")
+    a(f"| Epitope Proximity Bonus | {ep_cell} |")
+    a("")
+    a("---")
     a("")
 
-    # ── Epitope Proximity Bonus ───────────────────────────────────────────
-    a("## Epitope Proximity Bonus")
+    # ════════════════════════════════════════════════════════════
+    # PHASE 1 — Amino Acid Homology
+    # ════════════════════════════════════════════════════════════
+    a("## Phase 1 — Amino Acid Homology")
+    a("")
+    a("*Source: sequence-aligner sliding-window + McLachlan physicochemical pair scoring.*")
+    a("")
+    a("### Pair Source Counts")
+    a("")
+    a("| Source | Count |")
+    a("|--------|-------|")
+    for k, v in psc.items():
+        a(f"| {k} | {v} |")
+    a("")
+    a("### Top Homologous Pairs (pre-SEA, by composite_primary)")
+    a("")
+    # Collect pairs from sea_results; sort by base_score as proxy for composite_primary
+    top_pairs = sorted(result.sea_results, key=lambda r: r.base_score, reverse=True)[:15]
+    if top_pairs:
+        a("| # | Viral Seq | Host Seq | Viral Pos | Host Pos | Base Score |")
+        a("|---|-----------|----------|-----------|----------|-----------|")
+        for i, r in enumerate(top_pairs, 1):
+            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {r.base_score:.3f} |")
+    else:
+        a("*No pairs available.*")
+    a("")
+    a("---")
+    a("")
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 2 — Degradation Motif Analysis
+    # ════════════════════════════════════════════════════════════
+    a("## Phase 2 — Degradation Motif Analysis")
+    a("")
+    a("*Source: protein_degradation module — KFERQ, LIR, D-box, hinge, jammer scans.*")
+    a("")
+    a("### Viral Protein Motif Profile")
+    a("")
+    vs = result.viral_motif_profile.get("summary", {})
+    a(f"| Motif Type | Value |")
+    a(f"|-----------|-------|")
+    a(f"| CMA Category | `{vs.get('cma_category', 'N/A')}` |")
+    a(f"| KFERQ Motifs | {vs.get('n_kferq', 0)} |")
+    a(f"| LIR Motifs | {vs.get('n_lir', 0)} |")
+    a(f"| D-box Degrons | {vs.get('n_dbox', 0)} |")
+    a(f"| Hinges — Tier 1 | {vhj.get('n_hinges_t1', 0)} |")
+    a(f"| Hinges — Tier 2 | {vhj.get('n_hinges_t2', 0)} |")
+    a(f"| Jammers | {vhj.get('n_jammers', 0)} |")
+    a(f"| Destabilising N-term | {vs.get('has_destabilising_n_term', False)} |")
+    a(f"| Destabilising C-term | {vs.get('has_destabilising_c_term', False)} |")
+    a("")
+    a("### Host Protein Motif Profile")
+    a("")
+    hs = result.host_motif_profile.get("summary", {})
+    a(f"| Motif Type | Value |")
+    a(f"|-----------|-------|")
+    a(f"| CMA Category | `{hs.get('cma_category', 'N/A')}` |")
+    a(f"| KFERQ Motifs | {hs.get('n_kferq', 0)} |")
+    a(f"| LIR Motifs | {hs.get('n_lir', 0)} |")
+    a(f"| D-box Degrons | {hs.get('n_dbox', 0)} |")
+    a(f"| Hinges — Tier 1 | {hhj.get('n_hinges_t1', 0)} |")
+    a(f"| Hinges — Tier 2 | {hhj.get('n_hinges_t2', 0)} |")
+    a(f"| Jammers | {hhj.get('n_jammers', 0)} |")
+    a(f"| Destabilising N-term | {hs.get('has_destabilising_n_term', False)} |")
+    a(f"| Destabilising C-term | {hs.get('has_destabilising_c_term', False)} |")
+    a("")
+    a("### Host CMA Network Membership")
+    a("")
+    if result.host_cma_membership:
+        hc = result.host_cma_membership
+        a(f"| Field | Value |")
+        a(f"|-------|-------|")
+        a(f"| Symbol | `{hc.get('symbol', 'N/A')}` |")
+        a(f"| Category | {hc.get('category', 'N/A')} |")
+        a(f"| Direction | {'+1 (CMA activating)' if hc.get('direction', 0) == 1 else '-1 (CMA inhibiting)'} |")
+        a(f"| Weight | {hc.get('weight', 'N/A')} |")
+    else:
+        a(f"*{result.host_protein_name} is not a known CMA network member.*")
+    a("")
+    a("---")
+    a("")
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 3 — SEA Finder Analysis
+    # ════════════════════════════════════════════════════════════
+    a("## Phase 3 — SEA Finder Analysis")
+    a("")
+    a("*Source: SEA module — architecture scoring, hinge/jammer context, CMA weighting.*")
+    a("")
+    a("### Architecture Class Distribution")
+    a("")
+    arch_dist = _arch_distribution(result.sea_results)
+    if arch_dist:
+        a("| Architecture | Count |")
+        a("|-------------|-------|")
+        for arc, cnt in arch_dist.items():
+            a(f"| {arc} | {cnt} |")
+    else:
+        a("*No SEA results.*")
+    a("")
+    a("### Epitope Proximity Bonus")
     a("")
     if result.epitope_proximity_hits:
         a(f"**Host accession:** `{result.host_accession}`  |  "
@@ -521,18 +715,7 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
             a(f"*(Host accession: `{result.host_accession}`, "
               f"bonus configured: {result.epitope_proximity_bonus_applied:.2f})*")
     a("")
-
-    # ── Pair Source Counts ────────────────────────────────────────────────
-    a("## Pair Source Counts")
-    a("")
-    a(f"| Source | Count |")
-    a(f"|--------|-------|")
-    for k, v in psc.items():
-        a(f"| {k} | {v} |")
-    a("")
-
-    # ── Top SEA Hits ──────────────────────────────────────────────────────
-    a("## Top SEA Hits (ranked by final_sea_score)")
+    a("### Top SEA Hits (ranked by final_sea_score)")
     a("")
     top_n = result.sea_results[:20]
     if top_n:
@@ -544,51 +727,12 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     else:
         a("*No SEA hits found.*")
     a("")
-
-    # ── Viral Motif Profile ───────────────────────────────────────────────
-    a("## Viral Degradation Motif Profile")
+    a("### Super-Epitope Details")
     a("")
-    vs = result.viral_motif_profile.get("summary", {})
-    a(f"- CMA category: `{vs.get('cma_category', 'N/A')}`")
-    a(f"- KFERQ motifs: {vs.get('n_kferq', 0)}")
-    a(f"- LIR motifs: {vs.get('n_lir', 0)}")
-    a(f"- D-box degrons: {vs.get('n_dbox', 0)}")
-    a(f"- Destabilising N-terminus: {vs.get('has_destabilising_n_term', False)}")
-    a(f"- Destabilising C-terminus: {vs.get('has_destabilising_c_term', False)}")
-    a("")
-
-    # ── Host Motif Profile ────────────────────────────────────────────────
-    a("## Host Degradation Motif Profile")
-    a("")
-    hs = result.host_motif_profile.get("summary", {})
-    a(f"- CMA category: `{hs.get('cma_category', 'N/A')}`")
-    a(f"- KFERQ motifs: {hs.get('n_kferq', 0)}")
-    a(f"- LIR motifs: {hs.get('n_lir', 0)}")
-    a(f"- D-box degrons: {hs.get('n_dbox', 0)}")
-    a(f"- Destabilising N-terminus: {hs.get('has_destabilising_n_term', False)}")
-    a(f"- Destabilising C-terminus: {hs.get('has_destabilising_c_term', False)}")
-    a("")
-
-    # ── CMA Membership ────────────────────────────────────────────────────
-    a("## Host CMA Network Membership")
-    a("")
-    if result.host_cma_membership:
-        hc = result.host_cma_membership
-        a(f"- Symbol: `{hc.get('symbol', 'N/A')}`")
-        a(f"- Category: {hc.get('category', 'N/A')}")
-        a(f"- Direction: {'+1 (CMA activating)' if hc.get('direction', 0) == 1 else '-1 (CMA inhibiting)'}")
-        a(f"- Weight: {hc.get('weight', 'N/A')}")
-    else:
-        a(f"*{result.host_protein_name} is not a known CMA network member.*")
-    a("")
-
-    # ── Super-Epitope Details ─────────────────────────────────────────────
     super_hits = [r for r in result.sea_results if r.is_super_epitope]
     if super_hits:
-        a("## Super-Epitope Details")
-        a("")
         for i, r in enumerate(super_hits, 1):
-            a(f"### Super-Epitope #{i} — pos {r.position1} (viral) / pos {r.position2} (host)")
+            a(f"#### Super-Epitope #{i} — viral pos {r.position1} / host pos {r.position2}")
             a("")
             a(f"- **Viral fragment:** `{r.seq1}`")
             a(f"- **Host fragment:** `{r.seq2}`")
@@ -602,13 +746,125 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
                 for note in r.notes:
                     a(f"  - {note}")
             a("")
+    else:
+        a("*No super-epitope hits in this run.*")
+    a("")
+    a("---")
+    a("")
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 4 — 3D Structural Analysis  (Pending)
+    # ════════════════════════════════════════════════════════════
+    a("## Phase 4 — 3D Structural Analysis")
+    a("")
+    a("> **Status: Pending** — methodology not yet implemented.")
+    a("")
+    a("Phase 4 will assess whether a SEA-identified mimicry pair organises two")
+    a("discontinuous fragments of the host protein into a functional")
+    a("**super-epitope architecture** after hinge-mediated phosphorylation and")
+    a("unfolding of the intervening sequence.  Candidate pairs for Phase 4 review")
+    a("are listed below.")
+    a("")
+    a("### Candidate Hits for Phase 4 (SUPER_EPITOPE, score ≥ 10.0)")
+    a("")
+    ph4_candidates = [
+        r for r in result.sea_results
+        if r.is_super_epitope and r.final_sea_score >= 10.0
+    ]
+    if ph4_candidates:
+        a("| # | Viral Seq | Host Seq | Viral Pos | Host Pos | Score |")
+        a("|---|-----------|----------|-----------|----------|-------|")
+        for i, r in enumerate(ph4_candidates, 1):
+            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {r.final_sea_score:.4f} |")
+    else:
+        a("*No candidates meeting threshold (SUPER_EPITOPE + score ≥ 10.0) found in this run.*")
+    a("")
+    a("### Planned Methodology")
+    a("")
+    a("1. Fetch PDB structure(s) for host protein via RCSB API.")
+    a("2. Extract Cα coordinates for each Phase 3 super-epitope fragment.")
+    a("3. Identify intervening hinge residues (from Phase 2 Tier-1 scan).")
+    a("4. Model phospho-hinge unfolding and estimate fragment proximity (Å).")
+    a("5. Score geometric feasibility of a **conformational super-epitope**.")
+    a("6. Pass candidate structures to Phase 6 (Data Visualization) for PDB rendering.")
+    a("")
+    a("---")
+    a("")
+
+    # ════════════════════════════════════════════════════════════
+    # PHASE 5 — Orchestrator Synthesis
+    # ════════════════════════════════════════════════════════════
+    a("## Phase 5 — Orchestrator Synthesis")
+    a("")
+    a("*Cross-phase key findings, risk interpretation, and recommended follow-on actions.*")
+    a("")
+    a("### Key Findings")
+    a("")
+    overall_risk = rs.get("overall_risk", "UNKNOWN")
+    top_score    = rs.get("top_final_score", 0.0)
+    n_super      = rs.get("n_super_epitope", 0)
+    n_pairs      = rs.get("n_pairs_scored", 0)
+    n_ep_hits    = rs.get("n_epitope_proximity_hits", 0)
+    top_arc      = rs.get("top_architecture", "N/A")
+
+    a(f"1. **Risk level:** {overall_risk} — top SEA score {top_score:.4f} across {n_pairs} scored pairs.")
+    if n_super > 0:
+        a(f"2. **Super-epitope architecture detected:** {n_super} hit(s) classified as SUPER_EPITOPE, "
+          f"indicating the viral sequence may scaffold a multi-component mimicry epitope.")
+    else:
+        a("2. **No super-epitope architecture detected** in this scoring run.")
+    if n_ep_hits > 0:
+        a(f"3. **Epitope proximity overlap:** {n_ep_hits} hit(s) land inside a known autoantibody "
+          f"epitope for host protein `{result.host_accession}` (+{result.epitope_proximity_bonus_applied:.2f} bonus each).")
+    else:
+        a("3. **No epitope proximity overlap** detected with known autoantibody epitope ranges.")
+    v_t1 = vhj.get("n_hinges_t1", 0)
+    v_t2 = vhj.get("n_hinges_t2", 0)
+    v_jm = vhj.get("n_jammers", 0)
+    h_t1 = hhj.get("n_hinges_t1", 0)
+    h_t2 = hhj.get("n_hinges_t2", 0)
+    h_jm = hhj.get("n_jammers", 0)
+    a(f"4. **Viral architectural complexity:** {v_t1} Tier-1 hinges, {v_t2} Tier-2 hinges, "
+      f"{v_jm} jammers — a high-jammer density increases immune evasion probability.")
+    a(f"5. **Host architectural context:** {h_t1} Tier-1 hinges, {h_t2} Tier-2 hinges, "
+      f"{h_jm} jammers — hinge-flanked regions are priority Phase 4 candidates.")
+    a("")
+    a("### Risk Interpretation")
+    a("")
+    if overall_risk == "CRITICAL":
+        a("The CRITICAL risk designation indicates the viral protein carries sequence motifs")
+        a("capable of mimicking host epitopes at multiple positions, with structural features")
+        a("(SUPER_EPITOPE architecture, high jammer density) that suggest active immune evasion.")
+        a("Priority action: Phase 4 structural validation of top super-epitope candidates.")
+    elif overall_risk == "HIGH":
+        a("HIGH risk: significant mimicry potential detected. Functional validation of top")
+        a("SEA hits is warranted before clinical or experimental extrapolation.")
+    elif overall_risk == "MODERATE":
+        a("MODERATE risk: mimicry signals present but below threshold for high-confidence")
+        a("clinical interpretation.  Additional sequence coverage (seq_aligner with BioPython)")
+        a("may clarify borderline hits.")
+    else:
+        a("LOW / UNKNOWN risk: insufficient evidence for actionable mimicry signal in this run.")
+    a("")
+    a("### Recommended Follow-On Actions")
+    a("")
+    a("- [ ] **Phase 4:** Fetch PDB structures and run geometric super-epitope assessment")
+    a(f"      on {len(ph4_candidates)} candidate hit(s) listed above.")
+    a("- [ ] **Install BioPython** in the analysis environment to enable seq_aligner pairs,")
+    a("      recovering the ~12 pairs currently missing from the scoring pool.")
+    a("- [ ] **Phase 6:** Generate PDB-mapped visualization of hinges, jammers, and top")
+    a("      SEA hits once Phase 4 structural coordinates are available.")
+    a("- [ ] **Update protein_knowledge_base.json** with any newly validated autoantibody")
+    a("      epitope positions to sharpen future epitope_proximity_bonus scoring.")
+    a("")
+    a("---")
+    a("")
 
     # ── Footer ────────────────────────────────────────────────────────────
-    a("---")
-    a("*Generated by SEA Orchestrator — BiologicExplorer/Tools*")
+    a("> *Generated by SEA Orchestrator v5 — BiologicExplorer/Tools*  ")
+    a(f"> *Phases 1–3 complete | Phase 4 pending | Phase 6 visualization queued*")
 
     return lines
-
 
 # ════════════════════════════════════════════════════════════════════════════
 #  MAIN ENTRY POINT
@@ -680,6 +936,10 @@ def orchestrate(
     # ── Step 1 & 2: Motif profiles ────────────────────────────────────────
     viral_profile = find_all_degradation_motifs(viral_seq)
     host_profile  = find_all_degradation_motifs(host_seq)
+
+    # ── Step 1c: Full-sequence hinge/jammer profiles ──────────────────────
+    viral_hj = _scan_hinge_jammer_profile(viral_seq, sea_config)
+    host_hj  = _scan_hinge_jammer_profile(host_seq,  sea_config)
 
     # ── Step 3: Convert host KFERQ motifs → SEA degradation_motifs format ─
     # find_kferq_motifs returns: {start (1-based), end, motif, type, notes}
@@ -780,6 +1040,8 @@ def orchestrate(
         viral_profile,
         host_profile,
         cma_score_result,
+        viral_hj_profile = viral_hj,
+        host_hj_profile  = host_hj,
     )
     # Patch in epitope proximity stats (not available inside _build_risk_summary)
     risk_summary["n_epitope_proximity_hits"] = len(proximity_hits)
@@ -803,4 +1065,6 @@ def orchestrate(
         epitope_proximity_bonus_applied  = (
             epitope_proximity_bonus if host_accession is not None else 0.0
         ),
+        viral_hinge_jammer_profile       = viral_hj,
+        host_hinge_jammer_profile        = host_hj,
     )
