@@ -1,0 +1,245 @@
+{
+  "_schema_version": "1.0.0",
+  "_description": "Protein biology knowledge base for the BiologicExplorer SEA orchestrator pipeline. Each entry is keyed by UniProt accession. Schema is protein-agnostic and can represent any host or viral protein. See PROTEIN_BIOLOGY_CONTEXT.md for full documentation, rationale, and how to add entries.",
+  "_template": {
+    "uniprot_accession": "PXXXXX",
+    "gene_name": "",
+    "protein_name": "",
+    "organism": "",
+    "taxon_id": null,
+    "cma_substrate": null,
+    "cma_evidence": [],
+    "known_autoantibody_epitopes": [
+      {
+        "label": "",
+        "residue_start": null,
+        "residue_end": null,
+        "sequence": "",
+        "mhc_restriction": "",
+        "antibody_types": [],
+        "critical_residues": [
+          {
+            "position": null,
+            "amino_acid": "",
+            "note": ""
+          }
+        ],
+        "disease_associations": [],
+        "notes": "",
+        "evidence": [
+          {
+            "citation_key": "",
+            "authors": "",
+            "year": null,
+            "title": "",
+            "journal": "",
+            "doi": "",
+            "pmid": ""
+          }
+        ]
+      }
+    ],
+    "known_mimicry_partners": [
+      {
+        "partner_accession": "",
+        "mimicry_type": "",
+        "host_region_start": null,
+        "host_region_end": null,
+        "partner_region_start": null,
+        "partner_region_end": null,
+        "notes": "",
+        "evidence": [
+          {
+            "citation_key": "",
+            "authors": "",
+            "year": null,
+            "title": "",
+            "journal": "",
+            "doi": "",
+            "pmid": ""
+          }
+        ]
+      }
+    ],
+    "disease_associations": [],
+    "notes": ""
+  },
+  "proteins": {
+    "P05181": {
+      "uniprot_accession": "P05181",
+      "gene_name": "CYP2E1",
+      "protein_name": "Cytochrome P450 2E1",
+      "organism": "Homo sapiens",
+      "taxon_id": 9606,
+      "cma_substrate": true,
+      "cma_evidence": [
+        {
+          "citation_key": "pipeline_kferq_analysis",
+          "authors": "BiologicExplorer pipeline (internal)",
+          "year": null,
+          "title": "KFERQ-like motif scan of P05181 sequence",
+          "journal": "internal",
+          "doi": "",
+          "pmid": "",
+          "note": "5 KFERQ-like motifs detected in CYP2E1 (P05181) sequence by motif_finder module. Presence of canonical and variant KFERQ pentapeptides is the biochemical basis for CMA substrate classification. See Q9WMX2_vs_P05181_sea_report.md for runtime output."
+        }
+      ],
+      "known_autoantibody_epitopes": [
+        {
+          "label": "JHDN-5",
+          "residue_start": 113,
+          "residue_end": 135,
+          "sequence": "Gly113...Leu135",
+          "mhc_restriction": "MHC_II",
+          "antibody_types": ["IgG4"],
+          "critical_residues": [
+            {
+              "position": 123,
+              "amino_acid": "Lys",
+              "note": "Lys123 modification (adduct formation by reactive metabolite or drug) is required to break self-tolerance and induce hepatitis and CYP2E1 autoantibodies in mice. This is the most immunogenically sensitive residue in the epitope."
+            }
+          ],
+          "disease_associations": [
+            "anesthetic_drug-induced_hepatitis",
+            "chronic_hepatitis_C",
+            "HCV-associated_hepatic_fibrosis"
+          ],
+          "notes": "JHDN-5 is a novel MHC II-restricted immunodominant epitope shared between halogenated anesthetic-induced hepatitis and viral (HCV) hepatitis. IgG4 against Gly113-Leu135 is independently associated with severe hepatic fibrosis in HCV-positive patients (P=0.0142 after covariate adjustment, ALIVE cohort n=200). Antiserum against JHDN-5 recognizes mitochondria and endoplasmic reticula, upregulates HSP27, induces mitochondrial oxidative stress via complex I inhibition (P<0.001), and inhibits CYP2E1 activity. Pipeline McLachlan analysis found independent hits at viral positions mirroring host positions 123-129 and 130-136, corroborating the epitope range without prior knowledge of this literature.",
+          "evidence": [
+            {
+              "citation_key": "McCarthy2018",
+              "authors": "McCarthy LR, Mukherjee R, Bhatt DL, et al.",
+              "year": 2018,
+              "title": "Identification of a Novel MHC-Restricted CYP2E1 Epitope Associated with Anesthetic and Viral Hepatitis",
+              "journal": "mSphere",
+              "doi": "10.1128/msphere.00453-18",
+              "pmid": ""
+            }
+          ]
+        },
+        {
+          "label": "conformational_epitopes_ALD_CHC",
+          "residue_start": null,
+          "residue_end": null,
+          "sequence": "",
+          "mhc_restriction": "conformational",
+          "antibody_types": ["IgG"],
+          "critical_residues": [],
+          "disease_associations": [
+            "alcoholic_liver_disease",
+            "chronic_hepatitis_C"
+          ],
+          "notes": "Anti-CYP2E1 autoantibodies in ALD and CHC target conformational epitopes located in close proximity on the molecular surface. Detectable in approximately one-third of patients with advanced ALD and CHC. Presence is an independent predictor of extensive necro-inflammation and fibrosis and worsens hepatitis recurrence following liver transplantation. Epitopes are expressed on the hepatocyte plasma membrane where antibody-mediated cytotoxicity can occur.",
+          "evidence": [
+            {
+              "citation_key": "Sutti2014",
+              "authors": "Sutti S, Vidali M, Albano E",
+              "year": 2014,
+              "title": "CYP2E1 autoantibodies in liver diseases",
+              "journal": "Redox Biology",
+              "doi": "10.1016/j.redox.2014.11.004",
+              "pmid": "25460731"
+            }
+          ]
+        }
+      ],
+      "known_mimicry_partners": [
+        {
+          "partner_accession": "Q9WMX2",
+          "mimicry_type": "molecular_mimicry_MHC_II",
+          "host_region_start": 113,
+          "host_region_end": 135,
+          "partner_region_start": 40,
+          "partner_region_end": 150,
+          "notes": "HCV polyprotein (Q9WMX2) N-terminal core region (approx. residues 40-150) contains sequences mimicking CYP2E1 Gly113-Leu135. Molecular mimicry is proposed as the mechanism for breaking self-tolerance against CYP2E1 during HCV infection. Pipeline McLachlan scoring identified three independent hits with host anchor at 123-129, 127-133, and 130-136 in this epitope range. The hit at host pos 123 (Lys, the critical modification site) is the highest-scoring of the three. See also CYP2A6 mimicry by HCV core 178-187 (Kammer 1999), which is a related but distinct finding involving CYP2A6 rather than CYP2E1.",
+          "evidence": [
+            {
+              "citation_key": "Sutti2014",
+              "authors": "Sutti S, Vidali M, Albano E",
+              "year": 2014,
+              "title": "CYP2E1 autoantibodies in liver diseases",
+              "journal": "Redox Biology",
+              "doi": "10.1016/j.redox.2014.11.004",
+              "pmid": "25460731"
+            },
+            {
+              "citation_key": "McCarthy2018",
+              "authors": "McCarthy LR, Mukherjee R, Bhatt DL, et al.",
+              "year": 2018,
+              "title": "Identification of a Novel MHC-Restricted CYP2E1 Epitope Associated with Anesthetic and Viral Hepatitis",
+              "journal": "mSphere",
+              "doi": "10.1128/msphere.00453-18",
+              "pmid": ""
+            }
+          ]
+        }
+      ],
+      "disease_associations": [
+        "alcoholic_liver_disease",
+        "chronic_hepatitis_C",
+        "anesthetic_drug-induced_hepatitis",
+        "HCV-associated_hepatic_fibrosis",
+        "nonalcoholic_steatohepatitis"
+      ],
+      "notes": "CYP2E1 is a hepatic microsomal enzyme responsible for oxidative biotransformation of low-molecular-weight xenobiotics (ethanol, halogenated anesthetics, acetaminophen) and endogenous substrates. It is the primary autoimmune target in ALD, CHC, and halogenated anesthetic-induced hepatitis. Its expression is induced by ethanol, obesity, and diabetes. CYP2E1 is transported to the hepatocyte plasma membrane via secretory vesicles, where surface-expressed CYP2E1 can be targeted by circulating autoantibodies, enabling antibody-mediated cytotoxicity."
+    },
+    "Q9WMX2": {
+      "uniprot_accession": "Q9WMX2",
+      "gene_name": "polyprotein",
+      "protein_name": "HCV polyprotein",
+      "organism": "Hepatitis C virus",
+      "taxon_id": 11103,
+      "cma_substrate": null,
+      "cma_evidence": [],
+      "known_autoantibody_epitopes": [],
+      "known_mimicry_partners": [
+        {
+          "partner_accession": "P05181",
+          "mimicry_type": "molecular_mimicry_MHC_II",
+          "host_region_start": null,
+          "host_region_end": null,
+          "partner_region_start": 40,
+          "partner_region_end": 150,
+          "notes": "HCV polyprotein core region (approx. residues 40-150) contains sequences with McLachlan physicochemical similarity to CYP2E1 (P05181) Gly113-Leu135 epitope. Three independent scored hits: (1) viral 2525-2531 vs host 123-129, score 16.66; (2) viral 953-959 vs host 130-136, score 16.13; (3) viral 676-682 vs host 127-133, score 15.05. Additionally, Super-Epitope #10 in the SEA report maps viral pos 110 to host pos 123 (Lys123 — the critical immunogenic residue). Note: HCV core 178-187 (LLALLSCLTV) is separately reported to mimic CYP2A6 residues 8-17 at the CTL level (Kammer 1999) — this is a distinct finding from the CYP2E1 mimicry.",
+          "evidence": [
+            {
+              "citation_key": "McCarthy2018",
+              "authors": "McCarthy LR, Mukherjee R, Bhatt DL, et al.",
+              "year": 2018,
+              "title": "Identification of a Novel MHC-Restricted CYP2E1 Epitope Associated with Anesthetic and Viral Hepatitis",
+              "journal": "mSphere",
+              "doi": "10.1128/msphere.00453-18",
+              "pmid": ""
+            },
+            {
+              "citation_key": "Kammer1999",
+              "authors": "Kammer AR, van der Burg SH, Grabscheid B, Hunziker IP, Kwappenberg KM, Reichen J, Melief CJ",
+              "year": 1999,
+              "title": "Molecular mimicry of human cytochrome P450 by hepatitis C virus at the level of cytotoxic T cell recognition",
+              "journal": "Journal of Experimental Medicine",
+              "doi": "10.1084/jem.190.2.169",
+              "pmid": "10432280",
+              "note": "This citation covers CYP2A6 mimicry (HCV core 178-187 / CYP2A6 8-17), not CYP2E1. Included here as related cross-CYP mimicry context."
+            },
+            {
+              "citation_key": "pipeline_sea_run",
+              "authors": "BiologicExplorer pipeline (internal)",
+              "year": null,
+              "title": "Q9WMX2 vs P05181 McLachlan SEA analysis",
+              "journal": "internal",
+              "doi": "",
+              "pmid": "",
+              "note": "134 filtered hits (composite_primary >= 15.0), 18 SUPER_EPITOPE tier, overall risk CRITICAL, top score 20.2898. See Q9WMX2_vs_P05181_sea_report.md."
+            }
+          ]
+        }
+      ],
+      "disease_associations": [
+        "chronic_hepatitis_C",
+        "HCV-associated_hepatic_fibrosis",
+        "CYP2E1_autoimmunity"
+      ],
+      "notes": "HCV polyprotein is a ~3000-residue precursor cleaved by viral and host proteases into structural (Core, E1, E2) and non-structural (NS2-NS5B) proteins. The core protein N-terminus (approx. residues 40-150) is implicated in molecular mimicry of hepatic CYPs, contributing to autoimmune hepatitis during chronic HCV infection. See Sutti 2014 for mechanism overview. Viral KFERQ-like motifs: 7 detected by pipeline (see SEA report)."
+    }
+  }
+}
