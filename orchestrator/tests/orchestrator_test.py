@@ -556,7 +556,8 @@ class TestEpitopeProximityBonus(unittest.TestCase):
         """
         Integration regression (Q9WMX2 vs P05181 dataset):
         Supplying a host_accession whose KB entry has mapped epitopes must
-        produce ≥1 proximity hit and set epitope_proximity_bonus_applied > 0.
+        produce ≥1 overlap annotation hit.  epitope_proximity_bonus_applied
+        must be 0.0 — no score boost is applied (annotation only).
         """
         res = orchestrate(
             viral_seq                = self.viral_seq,
@@ -568,16 +569,18 @@ class TestEpitopeProximityBonus(unittest.TestCase):
             mclachlan_min_composite  = 15.0,
             seq_aligner_min_identity = 0.999,    # block seq_aligner for speed
             host_accession           = "P05181",
-            epitope_proximity_bonus  = 2.0,
+            epitope_proximity_bonus  = 2.0,      # parameter accepted but no longer boosts score
         )
         self.assertGreater(
             len(res.epitope_proximity_hits), 0,
             "Expected ≥1 SEA hit whose host anchor falls in a mapped KB epitope range",
         )
-        self.assertEqual(res.epitope_proximity_bonus_applied, 2.0)
+        # Bonus is no longer applied to scores — annotation only
+        self.assertEqual(res.epitope_proximity_bonus_applied, 0.0)
+        # Top score is driven by Phase 2 convergence + Phase 3 architecture, not the bonus
         self.assertGreater(
-            res.sea_results[0].final_sea_score, 17.0,
-            "Top score after bonus must exceed 17.0",
+            res.sea_results[0].final_sea_score, 10.0,
+            "Top unbiased score must exceed 10.0",
         )
 
     def test_integration_no_bonus_when_no_accession_supplied(self):
