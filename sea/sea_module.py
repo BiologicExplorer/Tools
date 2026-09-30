@@ -733,6 +733,56 @@ class SEAModule:
         results.sort(key=lambda r: r.final_sea_score, reverse=True)
         return results
 
+    def run_from_sequences(
+        self,
+        viral_seq:           str,
+        host_seq:            str,
+        provided_motifs:     Optional[List[Dict]] = None,
+        autoimmune_diseases: Optional[List[str]]  = None,
+        min_identity:        float = 0.33,
+        window:              int   = 12,
+        step:                int   = 4,
+        max_pairs:           int   = 40,
+    ) -> List["SEAResult"]:
+        """
+        Convenience entry point: align sequences, then score.
+
+        Calls find_homologous_pairs(viral_seq, host_seq, ...) internally,
+        then forwards to run().  Requires BioPython.
+
+        Parameters
+        ----------
+        viral_seq           : full viral protein sequence
+        host_seq            : full host protein sequence
+        provided_motifs     : pre-computed degradation motifs from motif_finder
+                              (List of dicts with keys: motif, position, protein)
+        autoimmune_diseases : optional list of candidate disease names
+        min_identity        : passed to find_homologous_pairs (default 0.33)
+        window              : sliding window length             (default 12)
+        step                : stride between windows            (default 4)
+        max_pairs           : cap on accepted pairs             (default 40)
+
+        Returns
+        -------
+        List[SEAResult] sorted by final_sea_score descending.
+        Empty list if no homologous pairs meet the identity threshold.
+        """
+        pairs = find_homologous_pairs(
+            viral_seq    = viral_seq,
+            host_seq     = host_seq,
+            min_identity = min_identity,
+            window       = window,
+            step         = step,
+            max_pairs    = max_pairs,
+        )
+        if not pairs:
+            return []
+        return self.run(
+            homologous_pairs    = pairs,
+            autoimmune_diseases = autoimmune_diseases or [],
+            degradation_motifs  = provided_motifs or [],
+        )
+
     def report(self, results: List[SEAResult], top_n: Optional[int] = None) -> None:
         """Print a formatted SEA scan report to stdout."""
         display = results[:top_n] if top_n else results
@@ -774,3 +824,137 @@ class SEAModule:
         print(f"  Sandwiched       : {sand}")
         print(f"  With degradation : {sum(1 for r in results if r.degradation_score > 0)}")
         print("═" * W + "\n")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  HOMOLOGOUS PAIR FINDER
+# ══════════════════════════════════════════════════════════════════════════════
+
+try:
+    from Bio.Align import PairwiseAligner as _PairwiseAligner
+    _BIOPYTHON_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _BIOPYTHON_AVAILABLE = False
+
+
+def find_homologous_pairs(
+    viral_seq:    str,
+    host_seq:     str,
+    min_identity: float = 0.33,
+    window:       int   = 12,
+    step:         int   = 4,
+    max_pairs:    int   = 40,
+) -> List[Dict]:
+    """
+    Find short homologous sequence pairs between a viral and host protein.
+
+    Slides a window of *window* residues over *host_seq* (step *step*).
+    Each window is locally aligned against the full *viral_seq* using
+    BioPython PairwiseAligner (match=2, mismatch=-1, gap open=-5,
+    gap extend=-0.5).  A pair is kept when:
+
+      - the aligned block is >= 6 residues
+      - ungapped identity >= *min_identity*
+      - no previously accepted viral hit overlaps by > 50%
+
+    Pairs are sorted by similarity descending; ranks are assigned 1-based.
+
+    Parameters
+    ----------
+    viral_seq    : full viral protein sequence (query)
+    host_seq     : full host protein sequence  (reference window source)
+    min_identity : minimum fraction of identical residues (default 0.33)
+    window       : sliding window length in residues        (default 12)
+    step         : stride between windows                   (default 4)
+    max_pairs    : cap on accepted pairs before sorting     (default 40)
+
+    Returns
+    -------
+    List of pair dicts, each containing:
+        seq1             str    viral protein fragment
+        seq2             str    host protein fragment
+        position1        int    0-based start in viral_seq
+        position2        int    0-based start in host_seq
+        protein1         str    full viral_seq (reference for SEAScorer)
+        similarity_score float  ungapped identity 0–1
+        rank             int    1-based rank by similarity_score descending
+
+    Raises
+    ------
+    ImportError if BioPython is not installed.
+    """
+    if not _BIOPYTHON_AVAILABLE:
+        raise ImportError(
+            "BioPython is required for find_homologous_pairs(). "
+            "Install it with: pip install biopython"
+        )
+
+    aligner = _PairwiseAligner()
+    aligner.mode             = 'local'
+    aligner.match_score      =  2
+    aligner.mismatch_score   = -1
+    aligner.open_gap_score   = -5
+    aligner.extend_gap_score = -0.5
+
+    pairs       = []
+    seen_ranges = []   # (viral_start, viral_end) blocks already accepted
+
+    n_windows = (len(host_seq) - window) // step + 1
+
+    for step_i in range(n_windows):
+        host_start = step_i * step
+        host_win   = host_seq[host_start : host_start + window]
+        if len(host_win) < window:
+            break
+
+        try:
+            alignment = next(iter(aligner.align(viral_seq, host_win)))
+        except StopIteration:
+            continue
+
+        blocks = alignment.aligned
+        if blocks is None or len(blocks) < 2 or len(blocks[0]) == 0:
+            continue
+
+        v_s, v_e = blocks[0][0]
+        h_s, h_e = blocks[1][0]
+
+        block_len = min(v_e - v_s, h_e - h_s)
+        if block_len < 6:
+            continue
+
+        viral_frag = viral_seq[v_s : v_s + block_len]
+        host_frag  = host_win[h_s : h_s + block_len]
+
+        matches  = sum(a == b for a, b in zip(viral_frag, host_frag))
+        identity = matches / block_len
+
+        if identity < min_identity:
+            continue
+
+        overlapping = any(
+            max(0, min(v_s + block_len, se) - max(v_s, ss)) > block_len * 0.5
+            for ss, se in seen_ranges
+        )
+        if overlapping:
+            continue
+
+        seen_ranges.append((v_s, v_s + block_len))
+        pairs.append({
+            'seq1':             viral_frag,
+            'seq2':             host_frag,
+            'position1':        v_s,
+            'position2':        host_start + h_s,
+            'protein1':         viral_seq,
+            'similarity_score': round(identity, 4),
+            'rank':             0,
+        })
+
+        if len(pairs) >= max_pairs:
+            break
+
+    pairs.sort(key=lambda p: p['similarity_score'], reverse=True)
+    for i, p in enumerate(pairs):
+        p['rank'] = i + 1
+
+    return pairs
