@@ -64,10 +64,10 @@ except ImportError as exc:  # pragma: no cover
     )
 
 try:
-    from sea_module import SEAModule, SEAConfig, find_homologous_pairs
+    from sea.sea_module import SEAModule, SEAConfig, find_homologous_pairs
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
-        f"sea_module not found on sys.path={sys.path!r}\n"
+        f"sea.sea_module not found on sys.path={sys.path!r}\n"
         f"Original error: {exc}"
     )
 
