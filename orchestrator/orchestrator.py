@@ -110,6 +110,10 @@ class OrchestratorResult:
     viral_hinge_jammer_profile:  Dict  = field(default_factory=dict)
     host_hinge_jammer_profile:   Dict  = field(default_factory=dict)
 
+    # ── Phase 2 — Degradation pathway convergence ─────────────────────────────
+    phase2_enriched_pairs: List[Dict]  = field(default_factory=list)
+    calibration_result:    Dict        = field(default_factory=dict)
+
     # ── Meta ─────────────────────────────────────────────────────────────────
     timestamp:           str                = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -675,6 +679,47 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     else:
         a(f"*{result.host_protein_name} is not a known CMA network member.*")
     a("")
+
+    # ── Phase 2 Convergence Scoring ─────────────────────────────────────
+    a("### Convergence Scoring — Proximity to Degradation Motifs")
+    a("")
+    a("*Degradation pathway convergence: both viral and host fragments must approach*")
+    a("*the same CMA machinery (hinges + jammers) to enable co-presentation by MHC.*")
+    a("")
+
+    p2 = result.phase2_enriched_pairs
+    if p2:
+        # Tier breakdown
+        t1_cnt = sum(1 for p in p2 if p["phase2_tier"] == "T1")
+        t2_cnt = sum(1 for p in p2 if p["phase2_tier"] == "T2")
+        t3_cnt = sum(1 for p in p2 if p["phase2_tier"] == "T3")
+        a("#### Tier Distribution")
+        a("")
+        a("| Tier | Criteria | Count |")
+        a("|------|----------|-------|")
+        a(f"| **T1** | convergence ≥ 0.45 OR dual-sandwich OR (≥ 0.30 + single sandwich) | {t1_cnt} |")
+        a(f"| **T2** | convergence ≥ 0.15 | {t2_cnt} |")
+        a(f"| **T3** | convergence < 0.15 | {t3_cnt} |")
+        a("")
+
+        # Top 20 pairs sorted by convergence
+        top_conv = sorted(p2, key=lambda x: x["convergence_score"], reverse=True)[:20]
+        a("#### Top Pairs by Convergence Score")
+        a("")
+        a("| # | Viral Seq | Host Seq | Tier | Conv | V-ctx | H-ctx | V-dT1 | V-dJM | H-dT1 | H-dJM | Sandwich |")
+        a("|---|-----------|----------|------|------|-------|-------|-------|-------|-------|-------|----------|")
+        for i, p in enumerate(top_conv, 1):
+            v_sw = "V" if p["viral_sandwich"] else "—"
+            h_sw = "H" if p["host_sandwich"]  else "—"
+            sw   = "+".join(filter(lambda x: x != "—", [v_sw, h_sw])) or "—"
+            vdt1 = str(p["viral_dist_t1"]) if p["viral_dist_t1"] is not None else "—"
+            vdjm = str(p["viral_dist_jammer"]) if p["viral_dist_jammer"] is not None else "—"
+            hdt1 = str(p["host_dist_t1"]) if p["host_dist_t1"] is not None else "—"
+            hdjm = str(p["host_dist_jammer"]) if p["host_dist_jammer"] is not None else "—"
+            a(f"| {i} | `{p['seq1']}` | `{p['seq2']}` | {p['phase2_tier']} "              f"| {p['convergence_score']:.3f} | {p['viral_context_score']:.3f} "              f"| {p['host_context_score']:.3f} | {vdt1} | {vdjm} | {hdt1} | {hdjm} | {sw} |")
+    else:
+        a("*Phase 2 convergence data not available.*")
+    a("")
     a("---")
     a("")
 
@@ -717,13 +762,19 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("")
     a("### Top SEA Hits (ranked by final_sea_score)")
     a("")
+    # Build a quick lookup from position1+position2 → phase2_tier
+    _p2_tier_lookup: Dict[tuple, str] = {
+        (p["position1"], p["position2"]): p["phase2_tier"]
+        for p in result.phase2_enriched_pairs
+    }
     top_n = result.sea_results[:20]
     if top_n:
-        a("| Rank | Viral Seq | Host Seq | Viral Pos | Host Pos | Architecture | Final Score |")
-        a("|------|-----------|----------|-----------|----------|-------------|-------------|")
+        a("| Rank | Viral Seq | Host Seq | Viral Pos | Host Pos | Architecture | P2 Tier | Final Score |")
+        a("|------|-----------|----------|-----------|----------|-------------|---------|-------------|")
         for i, r in enumerate(top_n, 1):
-            arc = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
-            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {arc} | {r.final_sea_score:.4f} |")
+            arc  = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
+            tier = _p2_tier_lookup.get((r.position1, r.position2), "—")
+            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {arc} | {tier} | {r.final_sea_score:.4f} |")
     else:
         a("*No SEA hits found.*")
     a("")
@@ -846,6 +897,35 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     else:
         a("LOW / UNKNOWN risk: insufficient evidence for actionable mimicry signal in this run.")
     a("")
+    a("### Pre-Phase 4 Calibration Check")
+    a("")
+    cal = result.calibration_result
+    if cal:
+        cal_status = cal.get("status", "N/A")
+        cal_msg    = cal.get("message", "")
+        cal_top    = cal.get("top_n", 10)
+        cal_hits   = cal.get("known_epitope_hits", [])
+        cal_best   = cal.get("best_known_rank")
+        status_fmt = f"**{cal_status}**" if cal_status in ("PASS", "FAIL") else cal_status
+        a(f"**Status:** {status_fmt}  |  "          f"**Message:** {cal_msg}")
+        a("")
+        if cal_hits:
+            a(f"*Known-epitope hits in top {cal_top} results:*")
+            a("")
+            a("| Rank | Host Pos | Epitope | Range | Score |")
+            a("|------|----------|---------|-------|-------|")
+            for h in cal_hits:
+                a(f"| {h['rank']} | {h['host_pos']} | {h['epitope_label']} | "                  f"{h['epitope_range']} | {h['score']:.4f} |")
+            a("")
+        if cal_status == "FAIL":
+            a("> :warning: **Calibration FAIL** — the methodology is not surfacing")
+            a("> known autoantibody epitope positions in the top results.")
+            a("> Consider: relaxing mclachlan_min_composite, broadening epitope ranges")
+            a("> in protein_knowledge_base.json, or tuning SEAConfig thresholds.")
+            a("")
+    else:
+        a("*Calibration check not run (no host_accession supplied).*")
+    a("")
     a("### Recommended Follow-On Actions")
     a("")
     a("- [ ] **Phase 4:** Fetch PDB structures and run geometric super-epitope assessment")
@@ -865,6 +945,191 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a(f"> *Phases 1–3 complete | Phase 4 pending | Phase 6 visualization queued*")
 
     return lines
+
+# ════════════════════════════════════════════════════════════════════════════
+#  PHASE 2 — DEGRADATION PATHWAY CONVERGENCE HELPERS
+# ════════════════════════════════════════════════════════════════════════════
+
+def _min_dist(pos: int, elements: List[Any], seq_window: int = 7) -> Optional[int]:
+    """
+    Return the minimum residue distance from *pos* (0-based, fragment start)
+    to the nearest element in *elements* (each must have a ``.position`` attr).
+
+    Distance is measured centre-to-centre: the fragment centre is
+    ``pos + seq_window // 2``.  Returns None when *elements* is empty.
+    """
+    if not elements:
+        return None
+    center = pos + seq_window // 2
+    return min(abs(center - e.position) for e in elements)
+
+
+def _compute_pair_degradation_convergence(
+    viral_pos:       int,
+    host_pos:        int,
+    viral_hj:        Dict,
+    host_hj:         Dict,
+    seq_window:      int   = 7,
+    sandwich_window: int   = 20,
+    decay_factor:    float = 10.0,
+) -> Dict:
+    """
+    Compute the degradation pathway convergence score for one pair.
+
+    Context score formula (per side):
+        context = min(1.0,
+            0.70 × max(0, 1 − dist_t1  / decay_factor)
+          + 0.45 × max(0, 1 − dist_t2  / decay_factor)
+          + 0.30 × max(0, 1 − dist_jmr / decay_factor))
+
+    Convergence = viral_context × host_context   (multiplicative)
+
+    Sandwich flag: pair centre lies between a jammer and a hinge that are
+    both within *sandwich_window* residues of each other on the same side.
+
+    Tier assignment:
+        T1 : convergence ≥ 0.45  OR  (v_sandwich AND h_sandwich)
+             OR  (convergence ≥ 0.30 AND (v_sandwich OR h_sandwich))
+        T2 : convergence ≥ 0.15
+        T3 : below 0.15
+
+    Returns a flat dict with all distances, scores, flags, and tier.
+    """
+
+    def _context(pos: int, hj: Dict, win: int):
+        t1d = _min_dist(pos, hj.get("hinges_t1", []), win)
+        t2d = _min_dist(pos, hj.get("hinges_t2", []), win)
+        jmd = _min_dist(pos, hj.get("jammers",   []), win)
+
+        def contrib(d, w):
+            if d is None:
+                return 0.0
+            return w * max(0.0, 1.0 - d / decay_factor)
+
+        score = contrib(t1d, 0.70) + contrib(t2d, 0.45) + contrib(jmd, 0.30)
+        return min(1.0, score), t1d, t2d, jmd
+
+    def _sandwich(pos: int, hj: Dict, win: int) -> bool:
+        """True if pos centre lies between a (jammer, hinge) pair ≤ sandwich_window apart."""
+        jammers = hj.get("jammers",   [])
+        hinges  = hj.get("hinges_t1", []) + hj.get("hinges_t2", [])
+        center  = pos + win // 2
+        for jm in jammers:
+            for hg in hinges:
+                lo   = min(jm.position, hg.position)
+                hi   = max(jm.position, hg.position)
+                span = hi - lo
+                if span <= sandwich_window and lo <= center <= hi:
+                    return True
+        return False
+
+    v_ctx, v_t1d, v_t2d, v_jmd = _context(viral_pos, viral_hj, seq_window)
+    h_ctx, h_t1d, h_t2d, h_jmd = _context(host_pos,  host_hj,  seq_window)
+
+    convergence = round(v_ctx * h_ctx, 4)
+
+    v_sand = _sandwich(viral_pos, viral_hj, seq_window)
+    h_sand = _sandwich(host_pos,  host_hj,  seq_window)
+
+    if (convergence >= 0.45
+            or (v_sand and h_sand)
+            or (convergence >= 0.30 and (v_sand or h_sand))):
+        tier = "T1"
+    elif convergence >= 0.15:
+        tier = "T2"
+    else:
+        tier = "T3"
+
+    return {
+        "viral_dist_t1":       v_t1d,
+        "viral_dist_t2":       v_t2d,
+        "viral_dist_jammer":   v_jmd,
+        "host_dist_t1":        h_t1d,
+        "host_dist_t2":        h_t2d,
+        "host_dist_jammer":    h_jmd,
+        "viral_context_score": round(v_ctx, 4),
+        "host_context_score":  round(h_ctx, 4),
+        "convergence_score":   convergence,
+        "viral_sandwich":      v_sand,
+        "host_sandwich":       h_sand,
+        "phase2_tier":         tier,
+    }
+
+
+def _calibration_check(
+    sea_results:    List[Any],   # List[SEAResult]
+    host_accession: str,
+    kb_data:        Dict,
+    top_n:          int = 10,
+) -> Dict:
+    """
+    Pre-Phase 4 calibration check.
+
+    Verifies that at least one known autoantibody epitope position for
+    *host_accession* appears in the top *top_n* SEA results (after all
+    score boosts have been applied).
+
+    Returns
+    -------
+    Dict with keys:
+        status            : "PASS" | "FAIL" | "NO_EPITOPES"
+        top_n             : int (as supplied)
+        best_known_rank   : Optional[int] — 1-based rank of best known-epitope hit
+        known_epitope_hits: List[Dict]    — hits in top_n that overlap known epitope
+        epitopes_checked  : int           — number of linear epitopes loaded
+        message           : str           — human-readable summary
+    """
+    epitope_ranges = get_epitope_ranges(kb_data, host_accession)
+    if not epitope_ranges:
+        return {
+            "status":              "NO_EPITOPES",
+            "top_n":               top_n,
+            "best_known_rank":     None,
+            "known_epitope_hits":  [],
+            "epitopes_checked":    0,
+            "message": (
+                f"No linear epitopes found in knowledge base for {host_accession}."
+            ),
+        }
+
+    known_hits: List[Dict] = []
+    for rank_1b, r in enumerate(sea_results[:top_n], 1):
+        host_pos = r.position2 + 1   # 0-based → 1-based
+        for ep_start, ep_end, ep_label in epitope_ranges:
+            if ep_start <= host_pos <= ep_end:
+                known_hits.append({
+                    "rank":          rank_1b,
+                    "host_pos":      host_pos,
+                    "epitope_label": ep_label,
+                    "epitope_range": f"{ep_start}–{ep_end}",
+                    "score":         r.final_sea_score,
+                })
+                break   # one entry per result
+
+    best_rank = min((h["rank"] for h in known_hits), default=None)
+
+    if known_hits:
+        status  = "PASS"
+        message = (
+            f"PASS — {len(known_hits)} known-epitope hit(s) in top {top_n}; "
+            f"best at rank #{best_rank}."
+        )
+    else:
+        status  = "FAIL"
+        message = (
+            f"FAIL — no known-epitope host positions found in top {top_n} "
+            f"SEA results.  Methodology refinement recommended."
+        )
+
+    return {
+        "status":              status,
+        "top_n":               top_n,
+        "best_known_rank":     best_rank,
+        "known_epitope_hits":  known_hits,
+        "epitopes_checked":    len(epitope_ranges),
+        "message":             message,
+    }
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  MAIN ENTRY POINT
@@ -894,6 +1159,8 @@ def orchestrate(
     host_accession:            Optional[str]   = None,
     kb_path:                   Optional[str]   = None,
     epitope_proximity_bonus:   float           = 2.0,
+    # Phase 2 — convergence scoring
+    convergence_bonus_weight:  float           = 3.0,
 ) -> OrchestratorResult:
     """
     Run the full SEA Orchestrator pipeline.
@@ -1012,15 +1279,74 @@ def orchestrate(
     )
     # sea_results is already sorted by final_sea_score DESC by SEAModule.run()
 
+    # ── Knowledge base (loaded once; used by Steps 7b, 7d) ───────────────
+    kb_data: Dict = {}
+    if host_accession is not None:
+        kb_data = load_protein_knowledge_base(kb_path)
+
     # ── Step 7b: Epitope proximity bonus ──────────────────────────────────
     proximity_hits: List[Dict] = []
     if host_accession is not None and epitope_proximity_bonus != 0.0:
-        kb_data = load_protein_knowledge_base(kb_path)
         sea_results, proximity_hits = apply_epitope_proximity_bonus(
             sea_results,
             host_accession,
             kb_data,
             epitope_proximity_bonus,
+        )
+
+    # ── Step 7c: Phase 2 — degradation pathway convergence scoring ────────
+    phase2_pairs: List[Dict] = []
+    for r in sea_results:
+        conv = _compute_pair_degradation_convergence(
+            viral_pos       = r.position1,
+            host_pos        = r.position2,
+            viral_hj        = viral_hj,
+            host_hj         = host_hj,
+            seq_window      = 7,
+            sandwich_window = 20,
+            decay_factor    = 10.0,
+        )
+        boost = round(conv["convergence_score"] * convergence_bonus_weight, 4)
+        if boost > 0.0:
+            r.final_sea_score = round(r.final_sea_score + boost, 4)
+            r.notes.append(
+                f"Phase2 convergence boost +{boost:.4f} "
+                f"(v_ctx={conv['viral_context_score']:.3f} × "
+                f"h_ctx={conv['host_context_score']:.3f}, "
+                f"tier={conv['phase2_tier']})"
+            )
+        phase2_pairs.append({
+            "rank":                  r.rank,
+            "seq1":                  r.seq1,
+            "seq2":                  r.seq2,
+            "position1":             r.position1,
+            "position2":             r.position2,
+            "convergence_score":     conv["convergence_score"],
+            "phase2_tier":           conv["phase2_tier"],
+            "viral_context_score":   conv["viral_context_score"],
+            "host_context_score":    conv["host_context_score"],
+            "viral_dist_t1":         conv["viral_dist_t1"],
+            "viral_dist_t2":         conv["viral_dist_t2"],
+            "viral_dist_jammer":     conv["viral_dist_jammer"],
+            "host_dist_t1":          conv["host_dist_t1"],
+            "host_dist_t2":          conv["host_dist_t2"],
+            "host_dist_jammer":      conv["host_dist_jammer"],
+            "viral_sandwich":        conv["viral_sandwich"],
+            "host_sandwich":         conv["host_sandwich"],
+            "convergence_boost":     boost,
+            "final_sea_score":       r.final_sea_score,
+        })
+
+    # Re-sort and re-rank after convergence boosts
+    sea_results.sort(key=lambda r: r.final_sea_score, reverse=True)
+    for i, r in enumerate(sea_results, 1):
+        r.rank = i
+
+    # ── Step 7d: Pre-Phase 4 calibration check ────────────────────────────
+    calibration: Dict = {}
+    if host_accession is not None:
+        calibration = _calibration_check(
+            sea_results, host_accession, kb_data, top_n=10
         )
 
     # ── Step 8: Optional CMA score ────────────────────────────────────────
@@ -1067,4 +1393,6 @@ def orchestrate(
         ),
         viral_hinge_jammer_profile       = viral_hj,
         host_hinge_jammer_profile        = host_hj,
+        phase2_enriched_pairs            = phase2_pairs,
+        calibration_result               = calibration,
     )
