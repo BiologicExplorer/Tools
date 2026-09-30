@@ -35,12 +35,12 @@ NS5B  :2421 – 3011
 import sys
 import os
 import time
-sys.path.insert(0, '/home/sandbox')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
 
 import requests
-from Bio.Align import PairwiseAligner
 
-from sea_module import SEAModule, SEAConfig
+from sea.sea_module import SEAModule, SEAConfig, find_homologous_pairs
+from motif_finder.motif_finder import find_kferq_motifs, kferq_to_sea_motifs
 
 # ── HCV region map ────────────────────────────────────────────────────────────
 HCV_REGIONS = [
@@ -74,124 +74,6 @@ def fetch_sequence(uniprot_id: str) -> str:
     return ''.join(lines[1:])
 
 
-# ── KFERQ scanner (standalone — mirrors module rules) ────────────────────────
-def scan_kferq(sequence: str, protein_label: str = 'protein2'):
-    """
-    Return a list of provided_motif dicts for all KFERQ-like 5-mers found
-    in *sequence*.
-
-    Rules mirror SEAConfig._is_kferq_like exactly:
-      - Q  anywhere in the 5-mer  (glutamine — CMA targeting anchor)
-      - at least one K or R       (KFERQ_POSITIVE: basic residue)
-      - at least one D or E       (KFERQ_NEGATIVE: acidic residue)
-      - at least one F, I, L, or V (KFERQ_HYDROPHOBIC: hydrophobic residue)
-    All four conditions must be satisfied simultaneously.
-    """
-    motifs = []
-    for i in range(len(sequence) - 4):
-        w = sequence[i:i+5]
-        if ('Q' in w
-                and any(c in 'KR'   for c in w)
-                and any(c in 'DE'   for c in w)
-                and any(c in 'FILV' for c in w)):
-            motifs.append({'motif': w, 'position': i, 'protein': protein_label})
-    return motifs
-
-
-# ── Homologous pair finder ────────────────────────────────────────────────────
-def find_homologous_pairs(
-    hcv_seq:      str,
-    cyp2e1_seq:   str,
-    min_identity: float = 0.33,
-    window:       int   = 12,
-    step:         int   = 4,
-    max_pairs:    int   = 40,
-) -> list:
-    """
-    Slide a window of length *window* over CYP2E1 (step *step*).
-    For each window, run a local alignment against the full HCV
-    polyprotein (BioPython PairwiseAligner, match=2, mismatch=-1).
-    Keep the best hit if the ungapped identity >= min_identity and the
-    aligned block is >= 6 residues.  Deduplicate by HCV position
-    (no more than 50% overlap between any two accepted hits).
-    Return pairs sorted by identity descending, each with rank assigned.
-    """
-    aligner = PairwiseAligner()
-    aligner.mode            = 'local'
-    aligner.match_score     =  2
-    aligner.mismatch_score  = -1
-    aligner.open_gap_score  = -5
-    aligner.extend_gap_score = -0.5
-
-    pairs        = []
-    seen_ranges  = []   # list of (hcv_start, hcv_end) already used
-
-    n_windows = (len(cyp2e1_seq) - window) // step + 1
-
-    for step_i in range(n_windows):
-        cyp_start = step_i * step
-        cyp_win   = cyp2e1_seq[cyp_start:cyp_start + window]
-        if len(cyp_win) < window:
-            break
-
-        # ── Align CYP2E1 window against full HCV ──────────────────────
-        try:
-            alignment = next(iter(aligner.align(hcv_seq, cyp_win)))
-        except StopIteration:
-            continue
-
-        blocks = alignment.aligned  # shape: (2, n_blocks, 2)
-        if blocks is None or len(blocks) < 2 or len(blocks[0]) == 0:
-            continue
-
-        # Use the first (highest-scoring) aligned block
-        hcv_s, hcv_e = blocks[0][0]   # (start, end) in HCV
-        win_s, win_e = blocks[1][0]    # (start, end) in CYP2E1 window
-
-        block_len = min(hcv_e - hcv_s, win_e - win_s)
-        if block_len < 6:
-            continue
-
-        hcv_fragment  = hcv_seq[hcv_s : hcv_s  + block_len]
-        cyp_fragment  = cyp_win[win_s : win_s  + block_len]
-
-        matches  = sum(a == b for a, b in zip(hcv_fragment, cyp_fragment))
-        identity = matches / block_len
-
-        if identity < min_identity:
-            continue
-
-        # ── Deduplicate by HCV position ──────────────────────────────
-        overlapping = any(
-            max(0, min(hcv_e, se) - max(hcv_s, ss)) > block_len * 0.5
-            for ss, se in seen_ranges
-        )
-        if overlapping:
-            continue
-
-        seen_ranges.append((hcv_s, hcv_s + block_len))
-
-        pairs.append({
-            'seq1':             hcv_fragment,
-            'seq2':             cyp_fragment,
-            'position1':        hcv_s,
-            'position2':        cyp_start + win_s,
-            'protein1':         hcv_seq,
-            'similarity_score': round(identity, 4),
-            'rank':             0,          # assigned after sort
-        })
-
-        if len(pairs) >= max_pairs:
-            break
-
-    # Sort by identity descending and assign ranks
-    pairs.sort(key=lambda p: p['similarity_score'], reverse=True)
-    for i, p in enumerate(pairs):
-        p['rank'] = i + 1
-
-    return pairs
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 72)
@@ -211,7 +93,8 @@ def main():
 
     # ── 2. Scan CYP2E1 for KFERQ motifs ──────────────────────────────────
     print("\n[2/4]  Scanning CYP2E1 for KFERQ-like degradation motifs...")
-    cyp2e1_motifs = scan_kferq(cyp2e1_seq, protein_label='protein2')
+    cyp2e1_kferq  = find_kferq_motifs(cyp2e1_seq)
+    cyp2e1_motifs = kferq_to_sea_motifs(cyp2e1_kferq, protein='protein2')
     print(f"       Found {len(cyp2e1_motifs)} KFERQ-like motif(s):")
     for m in cyp2e1_motifs:
         print(f"         pos {m['position']:4d}  {m['motif']}")
