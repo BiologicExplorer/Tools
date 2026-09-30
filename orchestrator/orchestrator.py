@@ -734,8 +734,41 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         a(f"*{result.host_protein_name} is not a known CMA network member.*")
     a("")
 
+    # ── Phase 2a — KFERQ Motif Proximity ────────────────────────────────
+    a("### Phase 2a — KFERQ Degradation Motif Proximity")
+    a("")
+    a("*The primary mechanistic filter: a viral fragment that is homologous to a host*")
+    a("*sequence near a KFERQ-like CMA-targeting motif is the highest-priority SEA event.*")
+    a("*Proximity threshold: 30 residues (centre-to-centre).  V-KFdist / H-KFdist = distance*")
+    a("*to nearest KFERQ motif on viral / host side.  Pairs flagged here are floored at Tier 2.*")
+    a("")
+
+    p2 = result.phase2_enriched_pairs
+    proximal_pairs = [p for p in p2 if p.get("proximal_deg_motif")]
+    if proximal_pairs:
+        proximal_sorted = sorted(proximal_pairs, key=lambda x: x["final_sea_score"], reverse=True)
+        a(f"**{len(proximal_sorted)} homologous pair(s) lie within 30 residues of a KFERQ-like motif.**")
+        a("")
+        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | V-KFdist | H-KFdist | Tier | Score | KE |")
+        a("|---|-----------|-------|----------|-------|----------|----------|------|-------|----|")
+        for i, p in enumerate(proximal_sorted, 1):
+            v_pos  = p["position1"] + 1
+            h_pos  = p["position2"] + 1
+            vkf    = str(p["viral_kferq_dist"]) if p["viral_kferq_dist"] is not None else "—"
+            hkf    = str(p["host_kferq_dist"])  if p["host_kferq_dist"]  is not None else "—"
+            ke     = "★" if p.get("overlaps_known_epitope") else "—"
+            a(f"| {i} | `{p['seq1']}` | {v_pos} | `{p['seq2']}` | {h_pos} "
+              f"| {vkf} | {hkf} | {p['phase2_tier']} | {p['final_sea_score']:.4f} | {ke} |")
+    else:
+        a("*No homologous pairs found within the KFERQ proximity threshold.*")
+        a("*Interpretation: degradation motif co-localisation is absent at this threshold;*")
+        a("*Phase 2b convergence scoring remains the primary ranking signal.*")
+    a("")
+    a("---")
+    a("")
+
     # ── Phase 2 Convergence Scoring ─────────────────────────────────────
-    a("### Convergence Scoring — Proximity to Degradation Motifs")
+    a("### Phase 2b — Convergence Scoring — Proximity to Degradation Motifs")
     a("")
     a("*Degradation pathway convergence: both viral and host fragments must approach*")
     a("*the same CMA machinery (hinges + jammers) to enable co-presentation by MHC.*")
@@ -752,8 +785,8 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         a("| Tier | Criteria | Count |")
         a("|------|----------|-------|")
         a(f"| **T1** | convergence ≥ 0.45 OR dual-sandwich OR (≥ 0.30 + single sandwich) | {t1_cnt} |")
-        a(f"| **T2** | convergence ≥ 0.15 | {t2_cnt} |")
-        a(f"| **T3** | convergence < 0.15 | {t3_cnt} |")
+        a(f"| **T2** | convergence ≥ 0.15 OR KFERQ-proximal (Phase 2a floor) | {t2_cnt} |")
+        a(f"| **T3** | convergence < 0.15, no KFERQ proximity | {t3_cnt} |")
         a("")
 
         # Top 20 pairs sorted by convergence
@@ -939,6 +972,17 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
           f"Phase 2 convergence + Phase 3 architecture scoring.")
     else:
         a("3. **No known epitope overlap** detected with mapped autoantibody epitope ranges.")
+
+    # Phase 2a finding — KFERQ proximity
+    n_proximal = sum(1 for p in result.phase2_enriched_pairs if p.get("proximal_deg_motif"))
+    if n_proximal > 0:
+        a(f"6. **KFERQ-proximal pairs (Phase 2a):** {n_proximal} homologous pair(s) lie within "
+          f"30 residues of a KFERQ-like CMA-targeting motif. These are the highest-priority "
+          f"mechanistic candidates — they represent direct intersection of molecular mimicry "
+          f"with the host chaperone-mediated autophagy pathway. Review Phase 2a table above.")
+    else:
+        a("6. **No KFERQ-proximal pairs detected** at the 30-residue threshold. "
+          f"SEA priority is driven by Phase 2b convergence and Phase 3 architecture alone.")
     v_t1 = vhj.get("n_hinges_t1", 0)
     v_t2 = vhj.get("n_hinges_t2", 0)
     v_jm = vhj.get("n_jammers", 0)
@@ -1132,6 +1176,69 @@ def _compute_pair_degradation_convergence(
     }
 
 
+def _check_degradation_proximity(
+    viral_pos:        int,
+    host_pos:         int,
+    viral_kferq:      List[Dict],
+    host_kferq:       List[Dict],
+    seq_window:       int = 7,
+    proximity_window: int = 30,
+) -> Dict:
+    """
+    Phase 2a — KFERQ motif proximity check for a homologous pair.
+
+    For each side (viral, host), compute the centre-to-centre distance from
+    the fragment centre to the nearest KFERQ-like motif.
+
+    Fragment centre  = pos + seq_window // 2  (0-based).
+    KFERQ motif centre = (start - 1) + KFERQ_LEN // 2  (start is 1-based
+    from find_kferq_motifs(); converted here to 0-based).
+
+    Parameters
+    ----------
+    viral_pos, host_pos  : 0-based fragment start positions.
+    viral_kferq          : find_kferq_motifs() output for the viral sequence.
+    host_kferq           : find_kferq_motifs() output for the host sequence.
+    seq_window           : fragment length (default 7, matching SEAModule).
+    proximity_window     : residues; pair is flagged proximal if either
+                           distance ≤ this threshold (default 30).
+
+    Returns
+    -------
+    {
+      "viral_kferq_dist":   int | None,
+      "host_kferq_dist":    int | None,
+      "proximal_deg_motif": bool,
+    }
+    """
+    _KFERQ_LEN = 5  # canonical/phospho/acetyl pentapeptide
+
+    def _nearest_kferq(center: int, motifs: List[Dict]) -> Optional[int]:
+        if not motifs:
+            return None
+        return min(
+            abs(center - ((m["start"] - 1) + _KFERQ_LEN // 2))
+            for m in motifs
+        )
+
+    v_center = viral_pos + seq_window // 2
+    h_center = host_pos  + seq_window // 2
+
+    v_dist = _nearest_kferq(v_center, viral_kferq)
+    h_dist = _nearest_kferq(h_center, host_kferq)
+
+    proximal = (
+        (v_dist is not None and v_dist <= proximity_window) or
+        (h_dist is not None and h_dist <= proximity_window)
+    )
+
+    return {
+        "viral_kferq_dist":   v_dist,
+        "host_kferq_dist":    h_dist,
+        "proximal_deg_motif": proximal,
+    }
+
+
 def _calibration_check(
     sea_results:    List[Any],   # List[SEAResult]
     host_accession: str,
@@ -1237,6 +1344,8 @@ def orchestrate(
     epitope_proximity_bonus:   float           = 2.0,
     # Phase 2 — convergence scoring
     convergence_bonus_weight:  float           = 3.0,
+    # Phase 2a — KFERQ proximity window (residues)
+    deg_proximity_window:      int             = 30,
 ) -> OrchestratorResult:
     """
     Run the full SEA Orchestrator pipeline.
@@ -1374,6 +1483,33 @@ def orchestrate(
         (h["position1"], h["position2"]) for h in proximity_hits
     }
 
+    # ── Step 7b-prime: Phase 2a — KFERQ motif proximity check ────────────
+    # For each homologous pair from Phase 1, compute the distance to the
+    # nearest KFERQ-like degradation motif on the viral AND host side.
+    # This is the primary mechanistic filter: a viral sequence that mimics
+    # a host sequence near a KFERQ motif is the highest-priority SEA event.
+    # Annotation only — no score mutation.  A proximal pair is floored at
+    # Tier 2 in Step 7c to ensure it is never buried below T3.
+    viral_kferq_raw = viral_profile.get("kferq", [])
+    host_kferq_raw_p2 = find_kferq_motifs(host_seq)   # reuse raw 1-based list
+    _deg_proximity_map: Dict[tuple, Dict] = {}
+    for r in sea_results:
+        dp = _check_degradation_proximity(
+            viral_pos        = r.position1,
+            host_pos         = r.position2,
+            viral_kferq      = viral_kferq_raw,
+            host_kferq       = host_kferq_raw_p2,
+            seq_window       = 7,
+            proximity_window = deg_proximity_window,
+        )
+        _deg_proximity_map[(r.position1, r.position2)] = dp
+        if dp["proximal_deg_motif"]:
+            r.notes.append(
+                f"Phase2a KFERQ-proximal "
+                f"(v_dist={dp['viral_kferq_dist']}, "
+                f"h_dist={dp['host_kferq_dist']})"
+            )
+
     # ── Step 7c: Phase 2 — degradation pathway convergence scoring ────────
     phase2_pairs: List[Dict] = []
     for r in sea_results:
@@ -1395,6 +1531,13 @@ def orchestrate(
                 f"h_ctx={conv['host_context_score']:.3f}, "
                 f"tier={conv['phase2_tier']})"
             )
+
+        # Apply T2 floor for KFERQ-proximal pairs (Phase 2a override)
+        dp = _deg_proximity_map.get((r.position1, r.position2), {})
+        effective_tier = conv["phase2_tier"]
+        if dp.get("proximal_deg_motif") and effective_tier == "T3":
+            effective_tier = "T2"
+
         phase2_pairs.append({
             "rank":                  r.rank,
             "seq1":                  r.seq1,
@@ -1402,7 +1545,7 @@ def orchestrate(
             "position1":             r.position1,
             "position2":             r.position2,
             "convergence_score":     conv["convergence_score"],
-            "phase2_tier":           conv["phase2_tier"],
+            "phase2_tier":           effective_tier,
             "viral_context_score":   conv["viral_context_score"],
             "host_context_score":    conv["host_context_score"],
             "viral_dist_t1":         conv["viral_dist_t1"],
@@ -1416,6 +1559,9 @@ def orchestrate(
             "convergence_boost":     boost,
             "final_sea_score":       r.final_sea_score,
             "overlaps_known_epitope": (r.position1, r.position2) in _overlap_pos_set,
+            "viral_kferq_dist":      dp.get("viral_kferq_dist"),
+            "host_kferq_dist":       dp.get("host_kferq_dist"),
+            "proximal_deg_motif":    dp.get("proximal_deg_motif", False),
         })
 
     # Re-sort and re-rank after convergence boosts
