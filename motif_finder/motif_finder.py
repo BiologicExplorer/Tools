@@ -678,6 +678,40 @@ def find_all_degradation_motifs(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  SEA INTEGRATION HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def kferq_to_sea_motifs(
+    kferq_list: List[Dict],
+    protein:    str = 'protein2',
+) -> List[Dict]:
+    """
+    Convert find_kferq_motifs() output to the format expected by SEAModule.
+
+    motif_finder uses 1-based inclusive positions; SEA uses 0-based positions.
+
+    Parameters
+    ----------
+    kferq_list : output of find_kferq_motifs() or find_all_degradation_motifs()['kferq']
+    protein    : 'protein1' (viral) or 'protein2' (host, default)
+                 Pass 'protein2' for host KFERQ motifs so SEA scores CMA
+                 exposure risk on the host side.
+
+    Returns
+    -------
+    List of dicts: [{'motif': str, 'position': int (0-based), 'protein': str}, ...]
+    """
+    return [
+        {
+            'motif':    hit['motif'],
+            'position': hit['start'] - 1,   # 1-based → 0-based
+            'protein':  protein,
+        }
+        for hit in kferq_list
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  FASTA PARSER
 # ═══════════════════════════════════════════════════════════════════════════════
 
