@@ -706,8 +706,10 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         top_conv = sorted(p2, key=lambda x: x["convergence_score"], reverse=True)[:20]
         a("#### Top Pairs by Convergence Score")
         a("")
-        a("| # | Viral Seq | Host Seq | Tier | Conv | V-ctx | H-ctx | V-dT1 | V-dJM | H-dT1 | H-dJM | Sandwich |")
-        a("|---|-----------|----------|------|------|-------|-------|-------|-------|-------|-------|----------|")
+        a("*Positions are 1-based.  Score = final SEA score after all boosts.*")
+        a("")
+        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | Score | Tier | Conv | V-ctx | H-ctx | V-dT1 | V-dJM | H-dT1 | H-dJM | Sandwich |")
+        a("|---|-----------|-------|----------|-------|-------|------|------|-------|-------|-------|-------|-------|-------|----------|")
         for i, p in enumerate(top_conv, 1):
             v_sw = "V" if p["viral_sandwich"] else "—"
             h_sw = "H" if p["host_sandwich"]  else "—"
@@ -716,7 +718,12 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
             vdjm = str(p["viral_dist_jammer"]) if p["viral_dist_jammer"] is not None else "—"
             hdt1 = str(p["host_dist_t1"]) if p["host_dist_t1"] is not None else "—"
             hdjm = str(p["host_dist_jammer"]) if p["host_dist_jammer"] is not None else "—"
-            a(f"| {i} | `{p['seq1']}` | `{p['seq2']}` | {p['phase2_tier']} "              f"| {p['convergence_score']:.3f} | {p['viral_context_score']:.3f} "              f"| {p['host_context_score']:.3f} | {vdt1} | {vdjm} | {hdt1} | {hdjm} | {sw} |")
+            v_pos = p["position1"] + 1   # 0-based → 1-based
+            h_pos = p["position2"] + 1
+            score = p["final_sea_score"]
+            a(f"| {i} | `{p['seq1']}` | {v_pos} | `{p['seq2']}` | {h_pos} | {score:.4f} | {p['phase2_tier']} "
+              f"| {p['convergence_score']:.3f} | {p['viral_context_score']:.3f} "
+              f"| {p['host_context_score']:.3f} | {vdt1} | {vdjm} | {hdt1} | {hdjm} | {sw} |")
     else:
         a("*Phase 2 convergence data not available.*")
     a("")
