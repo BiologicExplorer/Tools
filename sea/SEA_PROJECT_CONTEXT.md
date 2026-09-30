@@ -4,7 +4,9 @@
 > Architecture (SEA) Scanner project.  Paste the URL of this file into any new chat
 > to resume work immediately without loss of design history.
 >
-> **Status as of last update:** All tests passing; real-protein test complete (HCV vs CYP2E1).
+> **Status as of last update:** All tests passing; real-protein test complete (HCV vs CYP2E1).  
+> Repo restructured into per-project directories (`sea/`, `motif_finder/`, `cma_network/`, `orchestrator/`).  
+> Orchestrator bootstrap context written — see `orchestrator/ORCHESTRATOR_CONTEXT.md`.
 
 ---
 
@@ -149,10 +151,10 @@ APC_TROPISM = {
 
 | File | Purpose |
 |------|---------|
-| `sea_module.py` | Core scanner — all classes, scanners, scorer, `SEAModule` |
-| `sea_test.py` | Synthetic regression suite (8 architecture class tests + EBNA density amplification test) |
-| `sea_real_test.py` | Real-protein test: HCV (Q9WMX2) vs CYP2E1 (P05181) |
-| `SEA_PROJECT_CONTEXT.md` | This file |
+| `sea/sea_module.py` | Core scanner — all classes, scanners, scorer, `SEAModule` |
+| `sea/tests/sea_test.py` | Synthetic regression suite (8 architecture class tests + EBNA density amplification test) |
+| `sea/tests/sea_real_test.py` | Real-protein test: HCV (Q9WMX2) vs CYP2E1 (P05181) |
+| `sea/SEA_PROJECT_CONTEXT.md` | This file |
 
 ### 5.2 Core Classes
 
@@ -275,17 +277,17 @@ autoimmune hepatitis, particularly implicating E2 structural epitopes.
 
 ## 9. Next Steps / Pending Work
 
-- [ ] **Other modules:** Two other modules (not yet described in this chat) need to be
-  written before an Orchestrator can be built.  The Orchestrator will combine ranked
-  homologous pairs from those modules into the pair dict format and call `SEAModule.run()`.
+- [x] **`motif_finder/motif_finder.py`** — complete; covers KFERQ, LIR, D-box, KEN, N/C-degrons, PEST.
+- [x] **`cma_network/cma_network.py`** — complete; covers CMA network membership lookup and activation scoring.
+- [x] **Orchestrator context written** — `orchestrator/ORCHESTRATOR_CONTEXT.md`; bootstrap doc for the next chat thread.
+- [ ] **Build `orchestrator/orchestrator.py`** — routes viral/host pair through all three modules; returns `OrchestratorResult` with ranked hits and a `.report()` method for OneDrive `.md` output.  See `ORCHESTRATOR_CONTEXT.md` for full design spec and API contracts.
 - [ ] **Expand jammer set:** As more viral proteins are analysed, additional G?/?G
   dipeptides may be added to `JammerScanner._UNIT_SET`.
 - [ ] **BLOSUM62 scoring:** Consider adding an optional BLOSUM62-based similarity metric
   to the pair finder for physicochemical (vs. identity-only) homology.
 - [ ] **Lower-identity region analysis:** The 33% identity threshold captures some molecular
   mimicry candidates; explore 25% threshold with BLOSUM62 normalisation.
-- [ ] **Orchestrator design:** When all modules are ready, design an orchestrator that
-  routes input sequences through all modules and merges outputs.
+- [ ] **Obsidian integration:** OneDrive `.md` outputs from `report()` will become Obsidian vault notes; consistent H1/H2/H3 headings matter.
 
 ---
 
@@ -293,8 +295,14 @@ autoimmune hepatitis, particularly implicating E2 structural epitopes.
 
 1. Point the new chat at this document (GitHub URL or paste contents).
 2. Reference files by path:
-   - `/home/sandbox/sea_module.py` — full SEA scanner
-   - `/home/sandbox/sea_test.py` — regression + EBNA density tests
-   - `/home/sandbox/sea_real_test.py` — HCV vs CYP2E1 real test
-3. Run `python sea_test.py` to verify the sandbox is intact.
+   - `sea/sea_module.py` — full SEA scanner
+   - `sea/tests/sea_test.py` — regression + EBNA density tests
+   - `sea/tests/sea_real_test.py` — HCV vs CYP2E1 real test
+3. Run `python sea/tests/sea_test.py` to verify the sandbox is intact.
 4. Continue from §9 (Next Steps) or describe your next goal.
+
+**To bootstrap the Orchestrator build thread specifically:**
+```
+Read https://raw.githubusercontent.com/BiologicExplorer/Tools/main/orchestrator/ORCHESTRATOR_CONTEXT.md
+and use it to bootstrap this chat for Orchestrator development.
+```
