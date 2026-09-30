@@ -34,6 +34,9 @@ from orchestrator.orchestrator import (
     mclachlan_to_pairs,
     _dedup_pairs,
     orchestrate,
+    load_protein_knowledge_base,
+    get_epitope_ranges,
+    apply_epitope_proximity_bonus,
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -376,6 +379,190 @@ class TestOrchestratorSeqAlignerOnly(unittest.TestCase):
     def test_has_some_results(self):
         """seq_aligner alone should find at least 1 pair."""
         self.assertGreater(len(self.result.sea_results), 0)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Unit & Integration: Epitope Proximity Bonus
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestEpitopeProximityBonus(unittest.TestCase):
+    """
+    Tests for load_protein_knowledge_base, get_epitope_ranges, and
+    apply_epitope_proximity_bonus, plus integration tests that confirm
+    the bonus flows correctly through orchestrate().
+
+    Knowledge-base fixture: P05181 (CYP2E1), JHDN-5 epitope residues 113-135.
+    """
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_sea_result(rank=1, position2=0, score=15.0):
+        """Construct a minimal SEAResult for unit testing."""
+        from sea.sea_module import SEAResult
+        r = SEAResult(
+            rank=rank,
+            seq1="AAAAAAA",
+            seq2="AAAAAAA",
+            position1=0,
+            position2=position2,
+        )
+        r.final_sea_score = score
+        return r
+
+    @classmethod
+    def setUpClass(cls):
+        """Load KB once; reuse test sequences fetched by earlier test classes."""
+        cls.kb = load_protein_knowledge_base()
+        cls.viral_seq, cls.host_seq, cls.v3_hits = _get_test_data()
+
+    # ── load_protein_knowledge_base ──────────────────────────────────────────
+
+    def test_load_kb_returns_dict(self):
+        """KB loads successfully and exposes the 'proteins' key."""
+        self.assertIsInstance(self.kb, dict)
+        self.assertIn("proteins", self.kb)
+
+    def test_load_kb_missing_path_returns_empty(self):
+        """Non-existent path must return {} without raising."""
+        result = load_protein_knowledge_base("/nonexistent/path.json")
+        self.assertEqual(result, {})
+
+    # ── get_epitope_ranges ───────────────────────────────────────────────────
+
+    def test_get_epitope_ranges_p05181(self):
+        """P05181 must include the JHDN-5 epitope (113, 135) with correct label."""
+        ranges = get_epitope_ranges(self.kb, "P05181")
+        self.assertGreaterEqual(len(ranges), 1)
+        labels = [label for (_, _, label) in ranges]
+        self.assertIn("JHDN-5", labels)
+        jhdn5 = next(t for t in ranges if t[2] == "JHDN-5")
+        self.assertEqual(jhdn5[0], 113)
+        self.assertEqual(jhdn5[1], 135)
+
+    def test_get_epitope_ranges_skips_null_positions(self):
+        """Conformational epitopes (null positions) must be excluded."""
+        ranges = get_epitope_ranges(self.kb, "P05181")
+        for (start, end, _) in ranges:
+            self.assertIsNotNone(start)
+            self.assertIsNotNone(end)
+
+    def test_get_epitope_ranges_unknown_accession_returns_empty(self):
+        """Accession not in KB → empty list."""
+        self.assertEqual(get_epitope_ranges(self.kb, "PXXXXX"), [])
+
+    def test_get_epitope_ranges_empty_kb_returns_empty(self):
+        """Empty KB dict → empty list."""
+        self.assertEqual(get_epitope_ranges({}, "P05181"), [])
+
+    # ── apply_epitope_proximity_bonus ────────────────────────────────────────
+
+    def test_apply_bonus_in_range(self):
+        """position2=112 → host_pos_1based=113 → in JHDN-5 (113-135) → +2.0 bonus."""
+        result = self._make_sea_result(rank=1, position2=112, score=15.0)
+        modified, hits = apply_epitope_proximity_bonus(
+            [result], "P05181", self.kb, bonus=2.0
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertAlmostEqual(modified[0].final_sea_score, 17.0, places=3)
+        self.assertEqual(hits[0]["epitope_label"], "JHDN-5")
+        self.assertEqual(hits[0]["host_pos_1based"], 113)
+
+    def test_apply_bonus_out_of_range(self):
+        """position2=9 → host_pos_1based=10 → outside JHDN-5 (113-135) → no bonus."""
+        result = self._make_sea_result(rank=1, position2=9, score=15.0)
+        modified, hits = apply_epitope_proximity_bonus(
+            [result], "P05181", self.kb, bonus=2.0
+        )
+        self.assertEqual(len(hits), 0)
+        self.assertAlmostEqual(modified[0].final_sea_score, 15.0, places=3)
+
+    def test_apply_bonus_once_per_result(self):
+        """Bonus applied at most once per result even if anchor overlaps multiple ranges."""
+        kb_double = {
+            "proteins": {
+                "PTEST": {
+                    "known_autoantibody_epitopes": [
+                        {"label": "EP1", "residue_start": 110, "residue_end": 120},
+                        {"label": "EP2", "residue_start": 113, "residue_end": 130},
+                    ]
+                }
+            }
+        }
+        # position2=114 → 1-based=115 → inside both EP1 and EP2
+        result = self._make_sea_result(rank=1, position2=114, score=10.0)
+        modified, hits = apply_epitope_proximity_bonus(
+            [result], "PTEST", kb_double, bonus=2.0
+        )
+        self.assertEqual(len(hits), 1, "Bonus must be applied exactly once")
+        self.assertAlmostEqual(modified[0].final_sea_score, 12.0, places=3)
+
+    def test_zero_bonus_no_effect(self):
+        """bonus=0.0 → scores unchanged, proximity_hits empty."""
+        result = self._make_sea_result(rank=1, position2=112, score=15.0)
+        modified, hits = apply_epitope_proximity_bonus(
+            [result], "P05181", self.kb, bonus=0.0
+        )
+        self.assertEqual(hits, [])
+        self.assertAlmostEqual(modified[0].final_sea_score, 15.0, places=3)
+
+    def test_empty_results_list_returns_empty_hits(self):
+        """Empty sea_results list → proximity_hits empty, no error."""
+        _, hits = apply_epitope_proximity_bonus([], "P05181", self.kb, bonus=2.0)
+        self.assertEqual(hits, [])
+
+    def test_bonus_note_appended_to_result_notes(self):
+        """A boosted result must have an explanatory note appended to its notes list."""
+        result = self._make_sea_result(rank=1, position2=122, score=15.0)
+        apply_epitope_proximity_bonus([result], "P05181", self.kb, bonus=2.0)
+        self.assertTrue(
+            any("Epitope proximity bonus" in n for n in result.notes),
+            "Expected 'Epitope proximity bonus' note in result.notes",
+        )
+
+    # ── Integration: orchestrate() ───────────────────────────────────────────
+
+    def test_integration_with_p05181(self):
+        """
+        Full orchestrate() with host_accession='P05181' and bonus=2.0 must
+        produce at least one epitope-proximity hit and set bonus_applied > 0.
+        """
+        res = orchestrate(
+            viral_seq                = self.viral_seq,
+            host_seq                 = self.host_seq,
+            virus_name               = "HCV",
+            viral_protein_name       = "polyprotein Q9WMX2",
+            host_protein_name        = "CYP2E1 P05181",
+            mclachlan_hits           = self.v3_hits,
+            mclachlan_min_composite  = 15.0,
+            seq_aligner_min_identity = 0.999,   # block seq_aligner for speed
+            host_accession           = "P05181",
+            epitope_proximity_bonus  = 2.0,
+        )
+        self.assertGreater(
+            len(res.epitope_proximity_hits), 0,
+            "Expected ≥1 hit in JHDN-5 range (113-135) from known McLachlan pairs",
+        )
+        self.assertEqual(res.epitope_proximity_bonus_applied, 2.0)
+        self.assertGreater(
+            res.sea_results[0].final_sea_score, 17.0,
+            "Top score must exceed 17.0 after bonus",
+        )
+
+    def test_integration_no_accession_no_bonus(self):
+        """orchestrate() without host_accession → bonus not applied, hits empty."""
+        res = orchestrate(
+            viral_seq                = self.viral_seq,
+            host_seq                 = self.host_seq,
+            virus_name               = "HCV",
+            viral_protein_name       = "polyprotein Q9WMX2",
+            host_protein_name        = "CYP2E1 P05181",
+            mclachlan_hits           = self.v3_hits,
+            mclachlan_min_composite  = 15.0,
+            seq_aligner_min_identity = 0.999,
+        )
+        self.assertEqual(res.epitope_proximity_bonus_applied, 0.0)
+        self.assertEqual(res.epitope_proximity_hits, [])
 
 
 # ════════════════════════════════════════════════════════════════════════════
