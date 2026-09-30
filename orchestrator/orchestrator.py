@@ -275,6 +275,60 @@ def apply_epitope_proximity_bonus(
     return sea_results, proximity_hits
 
 
+def annotate_epitope_overlap(
+    sea_results:    List[Any],   # List[SEAResult]
+    host_accession: str,
+    kb_data:        Dict,
+) -> List[Dict]:
+    """
+    Annotate each SEAResult whose host anchor overlaps a known autoantibody
+    epitope for *host_accession*.
+
+    Does **not** modify ``final_sea_score``.  Appends a note to
+    ``result.notes`` for traceability only.
+
+    Parameters
+    ----------
+    sea_results    : list of SEAResult objects — notes are mutated in place
+    host_accession : UniProt accession for the host protein
+    kb_data        : knowledge base dict (from load_protein_knowledge_base)
+
+    Returns
+    -------
+    List[Dict]
+        One entry per matching result, with keys:
+        seq1, seq2, position1, position2, host_pos_1based,
+        epitope_label, epitope_range.
+    """
+    if not sea_results:
+        return []
+
+    epitope_ranges = get_epitope_ranges(kb_data, host_accession)
+    if not epitope_ranges:
+        return []
+
+    overlap_hits: List[Dict] = []
+    for result in sea_results:
+        host_pos_1based = result.position2 + 1   # 0-based → 1-based
+        for (ep_start, ep_end, ep_label) in epitope_ranges:
+            if ep_start <= host_pos_1based <= ep_end:
+                result.notes.append(
+                    f"Known epitope overlap: host pos {host_pos_1based} "
+                    f"in '{ep_label}' ({ep_start}–{ep_end}) [annotation only]"
+                )
+                overlap_hits.append({
+                    "seq1":            result.seq1,
+                    "seq2":            result.seq2,
+                    "position1":       result.position1,
+                    "position2":       result.position2,
+                    "host_pos_1based": host_pos_1based,
+                    "epitope_label":   ep_label,
+                    "epitope_range":   f"{ep_start}–{ep_end}",
+                })
+                break   # at most one annotation per result
+    return overlap_hits
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  McLACHLAN CONVERSION
 # ════════════════════════════════════════════════════════════════════════════
@@ -706,10 +760,10 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         top_conv = sorted(p2, key=lambda x: x["convergence_score"], reverse=True)[:20]
         a("#### Top Pairs by Convergence Score")
         a("")
-        a("*Positions are 1-based.  Score = final SEA score after all boosts.*")
+        a("*Positions are 1-based.  Score = final SEA score (Phase 2 + Phase 3 boosts, no epitope bias).  KE = ★ if host sequence overlaps a known autoantibody epitope (annotation only).*")
         a("")
-        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | Score | Tier | Conv | V-ctx | H-ctx | V-dT1 | V-dJM | H-dT1 | H-dJM | Sandwich |")
-        a("|---|-----------|-------|----------|-------|-------|------|------|-------|-------|-------|-------|-------|-------|----------|")
+        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | Score | Tier | Conv | V-ctx | H-ctx | V-dT1 | V-dJM | H-dT1 | H-dJM | Sandwich | KE |")
+        a("|---|-----------|-------|----------|-------|-------|------|------|-------|-------|-------|-------|-------|-------|----------|----|")
         for i, p in enumerate(top_conv, 1):
             v_sw = "V" if p["viral_sandwich"] else "—"
             h_sw = "H" if p["host_sandwich"]  else "—"
@@ -721,9 +775,10 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
             v_pos = p["position1"] + 1   # 0-based → 1-based
             h_pos = p["position2"] + 1
             score = p["final_sea_score"]
+            ke    = "★" if p.get("overlaps_known_epitope") else "—"
             a(f"| {i} | `{p['seq1']}` | {v_pos} | `{p['seq2']}` | {h_pos} | {score:.4f} | {p['phase2_tier']} "
               f"| {p['convergence_score']:.3f} | {p['viral_context_score']:.3f} "
-              f"| {p['host_context_score']:.3f} | {vdt1} | {vdjm} | {hdt1} | {hdjm} | {sw} |")
+              f"| {p['host_context_score']:.3f} | {vdt1} | {vdjm} | {hdt1} | {hdjm} | {sw} | {ke} |")
     else:
         a("*Phase 2 convergence data not available.*")
     a("")
@@ -748,40 +803,46 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     else:
         a("*No SEA results.*")
     a("")
-    a("### Epitope Proximity Bonus")
+    a("### Known Epitope Overlap")
+    a("")
+    a("*Annotation only — these sequences are flagged because their host anchor overlaps a known*")
+    a("*autoantibody epitope in the knowledge base.  No score boost is applied; this label serves*")
+    a("*as ground-truth for calibration only.*")
     a("")
     if result.epitope_proximity_hits:
         a(f"**Host accession:** `{result.host_accession}`  |  "
-          f"**Bonus per hit:** +{result.epitope_proximity_bonus_applied:.2f}  |  "
-          f"**Hits boosted:** {len(result.epitope_proximity_hits)}")
+          f"**Overlapping hits:** {len(result.epitope_proximity_hits)}")
         a("")
-        a("| Rank | Viral Seq | Host Seq | Host Pos | Epitope | Range | New Score |")
-        a("|------|-----------|----------|----------|---------|-------|-----------|")
+        a("| Viral Seq | Host Seq | Host Pos | Epitope | Range |")
+        a("|-----------|----------|----------|---------|-------|")
         for h in result.epitope_proximity_hits:
-            a(f"| {h['rank']} | `{h['seq1']}` | `{h['seq2']}` | "
-              f"{h['host_pos_1based']} | {h['epitope_label']} | "
-              f"{h['epitope_range']} | {h['new_score']:.4f} |")
+            a(f"| `{h['seq1']}` | `{h['seq2']}` | "
+              f"{h['host_pos_1based']} | {h['epitope_label']} | {h['epitope_range']} |")
     else:
-        a("*No hits received an epitope proximity bonus.*")
+        a("*No host sequences overlap a known autoantibody epitope range.*")
         if result.host_accession:
-            a(f"*(Host accession: `{result.host_accession}`, "
-              f"bonus configured: {result.epitope_proximity_bonus_applied:.2f})*")
+            a(f"*(Host accession: `{result.host_accession}`)*")
     a("")
     a("### Top SEA Hits (ranked by final_sea_score)")
     a("")
-    # Build a quick lookup from position1+position2 → phase2_tier
+    # Build lookups from position pair → phase2_tier and overlaps_known_epitope
     _p2_tier_lookup: Dict[tuple, str] = {
         (p["position1"], p["position2"]): p["phase2_tier"]
         for p in result.phase2_enriched_pairs
     }
+    _p2_ke_lookup: Dict[tuple, bool] = {
+        (p["position1"], p["position2"]): p.get("overlaps_known_epitope", False)
+        for p in result.phase2_enriched_pairs
+    }
     top_n = result.sea_results[:20]
     if top_n:
-        a("| Rank | Viral Seq | Host Seq | Viral Pos | Host Pos | Architecture | P2 Tier | Final Score |")
-        a("|------|-----------|----------|-----------|----------|-------------|---------|-------------|")
+        a("| Rank | Viral Seq | Host Seq | Viral Pos | Host Pos | Architecture | P2 Tier | KE | Final Score |")
+        a("|------|-----------|----------|-----------|----------|-------------|---------|-----|-------------|")
         for i, r in enumerate(top_n, 1):
             arc  = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
             tier = _p2_tier_lookup.get((r.position1, r.position2), "—")
-            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {arc} | {tier} | {r.final_sea_score:.4f} |")
+            ke   = "★" if _p2_ke_lookup.get((r.position1, r.position2), False) else "—"
+            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {arc} | {tier} | {ke} | {r.final_sea_score:.4f} |")
     else:
         a("*No SEA hits found.*")
     a("")
@@ -872,10 +933,12 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     else:
         a("2. **No super-epitope architecture detected** in this scoring run.")
     if n_ep_hits > 0:
-        a(f"3. **Epitope proximity overlap:** {n_ep_hits} hit(s) land inside a known autoantibody "
-          f"epitope for host protein `{result.host_accession}` (+{result.epitope_proximity_bonus_applied:.2f} bonus each).")
+        a(f"3. **Known epitope overlap (annotation):** {n_ep_hits} hit(s) whose host anchor "
+          f"overlaps a mapped autoantibody epitope for `{result.host_accession}`. "
+          f"These sequences were NOT score-boosted; their ranking is driven entirely by "
+          f"Phase 2 convergence + Phase 3 architecture scoring.")
     else:
-        a("3. **No epitope proximity overlap** detected with known autoantibody epitope ranges.")
+        a("3. **No known epitope overlap** detected with mapped autoantibody epitope ranges.")
     v_t1 = vhj.get("n_hinges_t1", 0)
     v_t2 = vhj.get("n_hinges_t2", 0)
     v_jm = vhj.get("n_jammers", 0)
@@ -914,18 +977,24 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         cal_hits   = cal.get("known_epitope_hits", [])
         cal_best   = cal.get("best_known_rank")
         status_fmt = f"**{cal_status}**" if cal_status in ("PASS", "FAIL") else cal_status
-        a(f"**Status:** {status_fmt}  |  "          f"**Message:** {cal_msg}")
+        a(f"**Status:** {status_fmt}  |  "
+          f"**Message:** {cal_msg}")
+        a("")
+        a("*Scores shown are unbiased — no epitope proximity bonus was applied.*")
+        a("*A PASS here means Phase 2 convergence + Phase 3 architecture scoring*")
+        a("*surfaced known-epitope sequences on their own merits.*")
         a("")
         if cal_hits:
-            a(f"*Known-epitope hits in top {cal_top} results:*")
+            a(f"*Known-epitope hits in top {cal_top} results (unbiased ranking):*")
             a("")
             a("| Rank | Host Pos | Epitope | Range | Score |")
             a("|------|----------|---------|-------|-------|")
             for h in cal_hits:
-                a(f"| {h['rank']} | {h['host_pos']} | {h['epitope_label']} | "                  f"{h['epitope_range']} | {h['score']:.4f} |")
+                a(f"| {h['rank']} | {h['host_pos']} | {h['epitope_label']} | "
+                  f"{h['epitope_range']} | {h['score']:.4f} |")
             a("")
         if cal_status == "FAIL":
-            a("> :warning: **Calibration FAIL** — the methodology is not surfacing")
+            a("> :warning: **Calibration FAIL** — unbiased scoring did not surface")
             a("> known autoantibody epitope positions in the top results.")
             a("> Consider: relaxing mclachlan_min_composite, broadening epitope ranges")
             a("> in protein_knowledge_base.json, or tuning SEAConfig thresholds.")
@@ -1291,15 +1360,19 @@ def orchestrate(
     if host_accession is not None:
         kb_data = load_protein_knowledge_base(kb_path)
 
-    # ── Step 7b: Epitope proximity bonus ──────────────────────────────────
+    # ── Step 7b: Known epitope overlap annotation (no score boost) ───────
+    # Sequences that overlap a known autoantibody epitope are flagged for
+    # traceability.  The annotation is ONLY used as a post-hoc label — it
+    # does not alter final_sea_score.  Ranking is driven entirely by Phase 2
+    # convergence scoring (Step 7c), keeping calibration unbiased.
     proximity_hits: List[Dict] = []
-    if host_accession is not None and epitope_proximity_bonus != 0.0:
-        sea_results, proximity_hits = apply_epitope_proximity_bonus(
-            sea_results,
-            host_accession,
-            kb_data,
-            epitope_proximity_bonus,
-        )
+    if host_accession is not None:
+        proximity_hits = annotate_epitope_overlap(sea_results, host_accession, kb_data)
+
+    # Build position lookup for phase2_pairs stamping (Step 7c)
+    _overlap_pos_set: set = {
+        (h["position1"], h["position2"]) for h in proximity_hits
+    }
 
     # ── Step 7c: Phase 2 — degradation pathway convergence scoring ────────
     phase2_pairs: List[Dict] = []
@@ -1342,6 +1415,7 @@ def orchestrate(
             "host_sandwich":         conv["host_sandwich"],
             "convergence_boost":     boost,
             "final_sea_score":       r.final_sea_score,
+            "overlaps_known_epitope": (r.position1, r.position2) in _overlap_pos_set,
         })
 
     # Re-sort and re-rank after convergence boosts
@@ -1395,9 +1469,7 @@ def orchestrate(
         pair_source_counts               = pair_source_counts,
         host_accession                   = host_accession,
         epitope_proximity_hits           = proximity_hits,
-        epitope_proximity_bonus_applied  = (
-            epitope_proximity_bonus if host_accession is not None else 0.0
-        ),
+        epitope_proximity_bonus_applied  = 0.0,   # annotation only — no score boost applied
         viral_hinge_jammer_profile       = viral_hj,
         host_hinge_jammer_profile        = host_hj,
         phase2_enriched_pairs            = phase2_pairs,
