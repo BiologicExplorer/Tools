@@ -18,7 +18,7 @@ autoimmune disease via the following coordinated mechanism:
 Priority (architecture class, lowest → highest):
     NONE  <  DEGRADATION_ONLY  <  HINGE_ONLY  <  JAMMER_ONLY
           <  HINGE_AND_DEGRADATION / JAMMER_AND_DEGRADATION
-          <  SANDWICHED  <  SUPER_EPITOPE
+          <  SANDWICHED  <  COMPLETE_SEA
 
 Jammer scoring (action-potential amplitude model):
     Single jammer dipeptide  → small baseline contribution
@@ -82,7 +82,7 @@ class SEAConfig:
         "HINGE_AND_DEGRADATION":  2.5,
         "JAMMER_AND_DEGRADATION": 2.5,
         "SANDWICHED":             3.0,
-        "SUPER_EPITOPE":          5.0,
+        "COMPLETE_SEA":           5.0,
     }
 
     # ── Cell-type / APC-tropism weights ─────────────────────────────────────
@@ -128,7 +128,7 @@ class ArchitectureClass(Enum):
     HINGE_AND_DEGRADATION   = 4
     JAMMER_AND_DEGRADATION  = 5
     SANDWICHED              = 6
-    SUPER_EPITOPE           = 7
+    COMPLETE_SEA            = 7
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -191,7 +191,13 @@ class SEAResult:
     # ── Classification ───────────────────────────────────────────────────────
     architecture_class: ArchitectureClass = ArchitectureClass.NONE
     is_sandwiched:      bool  = False
-    is_super_epitope:   bool  = False
+    is_complete_sea:    bool  = False
+
+    # ── Phospho-exposure distance ─────────────────────────────────────────────
+    # Distance (residues) from the viral fragment centre to the nearest T1
+    # hinge found within the proximity window.  None when no T1 hinge is
+    # detected.  Used by the Orchestrator to compute phospho_exposure_score.
+    phospho_t1_hinge_dist: Optional[int] = None
 
     notes: List[str] = field(default_factory=list)
 
@@ -590,11 +596,11 @@ class SEAScorer:
         has_jammer = jammer_density_score > 0
         has_deg    = degradation_score > 0
 
-        is_super = is_sandwiched and has_deg
+        is_complete = is_sandwiched and has_deg
 
-        if is_super:
-            arch  = ArchitectureClass.SUPER_EPITOPE
-            bonus = cfg.BONUS["SUPER_EPITOPE"]
+        if is_complete:
+            arch  = ArchitectureClass.COMPLETE_SEA
+            bonus = cfg.BONUS["COMPLETE_SEA"]
         elif is_sandwiched:
             arch  = ArchitectureClass.SANDWICHED
             bonus = cfg.BONUS["SANDWICHED"]
@@ -626,8 +632,8 @@ class SEAScorer:
 
         # ── Build notes ───────────────────────────────────────────────────
         notes: List[str] = []
-        if is_super:
-            notes.append("SUPER-EPITOPE: sequence is sandwiched by structural "
+        if is_complete:
+            notes.append("COMPLETE-SEA: sequence is sandwiched by structural "
                          "features AND flanked by CMA degradation motif(s)")
         elif is_sandwiched:
             notes.append("Sandwiched: hinge/jammer features on BOTH sides of homologous sequence")
@@ -646,6 +652,13 @@ class SEAScorer:
             notes.append(f"Degradation motif '{dm.motif}' in {dm.protein} @ pos {dm.position} "
                          f"[dist={dm.distance}, src={dm.source}]")
         notes.append(f"Cell-type weight: {virus_name} → ×{cell_weight:.1f} (APC tropism)")
+
+        # ── Phospho-exposure distance ─────────────────────────────────────
+        # Distance from fragment centre to nearest T1 hinge (within window).
+        t1_in_window = [h for h in hinges if h.tier == HingeTier.TIER1]
+        phospho_t1d: Optional[int] = (
+            min(h.distance for h in t1_in_window) if t1_in_window else None
+        )
 
         return SEAResult(
             rank=pair['rank'],
@@ -666,7 +679,8 @@ class SEAScorer:
             final_sea_score=final_sea_score,
             architecture_class=arch,
             is_sandwiched=is_sandwiched,
-            is_super_epitope=is_super,
+            is_complete_sea=is_complete,
+            phospho_t1_hinge_dist=phospho_t1d,
             notes=notes,
         )
 
@@ -789,13 +803,13 @@ class SEAModule:
         W = 72
 
         print("\n" + "═" * W)
-        print("  SUPER-EPITOPE ARCHITECTURE (SEA) SCAN REPORT")
+        print("  COMPLETE-SEA ARCHITECTURE (SEA) SCAN REPORT")
         print(f"  Virus: {self.virus_name}")
         print("═" * W)
 
         for i, r in enumerate(display, 1):
-            if r.is_super_epitope:
-                tag = "  ★★ SUPER-EPITOPE ★★"
+            if r.is_complete_sea:
+                tag = "  ★★ COMPLETE-SEA ★★"
             elif r.is_sandwiched:
                 tag = "  ◆ SANDWICHED"
             else:
@@ -817,10 +831,10 @@ class SEAModule:
 
         print(f"\n{'═'*W}")
         total  = len(results)
-        supers = sum(1 for r in results if r.is_super_epitope)
-        sand   = sum(1 for r in results if r.is_sandwiched and not r.is_super_epitope)
+        supers = sum(1 for r in results if r.is_complete_sea)
+        sand   = sum(1 for r in results if r.is_sandwiched and not r.is_complete_sea)
         print(f"  Pairs scanned    : {total}")
-        print(f"  Super-epitopes   : {supers}")
+        print(f"  Complete-SEA hits: {supers}")
         print(f"  Sandwiched       : {sand}")
         print(f"  With degradation : {sum(1 for r in results if r.degradation_score > 0)}")
         print("═" * W + "\n")
