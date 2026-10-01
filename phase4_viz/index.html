@@ -194,26 +194,27 @@
       Strong (&#8805;4) &middot; Partial (2&ndash;3) &middot; Weak (1)&emsp;
       <strong style="color:#94A3B8">Hydrophobicity:</strong>
       <span style="display:inline-flex;gap:2px;vertical-align:middle;margin:0 3px">
-        <span class="prop-cell" style="background:#F59E0B;color:#0F172A">H</span>
-        <span class="prop-cell" style="background:#14B8A6;color:#0F172A">A</span>
-        <span class="prop-cell" style="background:#3B82F6;color:#fff">P</span>
+        <span class="prop-cell" style="background:#DC2626;color:#fff" title="Hydrophobic (A,V,I,L,M,F,W,C,P)">A</span>
+        <span class="prop-cell" style="background:#475569;color:#E2E8F0" title="Amphipathic (G,S,T,Y,H)">G</span>
+        <span class="prop-cell" style="background:#93C5FD;color:#0F172A" title="Polar-light — 1 N/O sidechain atom (K)">K</span>
+        <span class="prop-cell" style="background:#1D4ED8;color:#fff" title="Polar-dark — 2+ N/O sidechain atoms (D,E,R,N,Q)">D</span>
       </span>
-      H=Hydrophobic &middot; A=Amphipathic &middot; P=Polar&emsp;
+      Red=Hydrophobic &middot; Grey=Amphipathic &middot; Lt.Blue=Polar-low (K) &middot; Dk.Blue=Polar-high (D,E,R,N,Q)&emsp;
       <strong style="color:#94A3B8">Ionizability:</strong>
       <span style="display:inline-flex;gap:2px;vertical-align:middle;margin:0 3px">
-        <span class="prop-cell" style="background:#10B981;color:#fff">+</span>
-        <span class="prop-cell" style="background:#EF4444;color:#fff">&minus;</span>
-        <span class="prop-cell" style="background:#1E293B;color:#475569">&middot;</span>
+        <span class="prop-cell" style="background:#10B981;color:#fff" title="Cationic (K,R,H)">K</span>
+        <span class="prop-cell" style="background:#EF4444;color:#fff" title="Anionic (D,E)">D</span>
+        <span class="prop-cell" style="background:#1E293B;color:#475569" title="Neutral">G</span>
       </span>
-      +=Cationic &middot; &minus;=Anionic &middot; &middot;=Neutral&emsp;
+      Green=Cationic &middot; Red=Anionic &middot; Dark=Neutral&emsp;
       <strong style="color:#94A3B8">H-bond (sidechain):</strong>
       <span style="display:inline-flex;gap:2px;vertical-align:middle;margin:0 3px">
-        <span class="prop-cell" style="background:#3B82F6;color:#fff">D</span>
-        <span class="prop-cell" style="background:#F97316;color:#0F172A">A</span>
-        <span class="prop-cell" style="background:#8B5CF6;color:#fff">B</span>
-        <span class="prop-cell" style="background:#1E293B;color:#475569">&middot;</span>
+        <span class="prop-cell" style="background:#3B82F6;color:#fff" title="Donor only (K,R,W)">R</span>
+        <span class="prop-cell" style="background:#F97316;color:#0F172A" title="Acceptor only (D,E)">E</span>
+        <span class="prop-cell" style="background:#8B5CF6;color:#fff" title="Both donor &amp; acceptor (N,Q,S,T,Y,H)">N</span>
+        <span class="prop-cell" style="background:#1E293B;color:#475569" title="Neither (A,V,I,L,M,F,W,C,P,G)">A</span>
       </span>
-      D=Donor &middot; A=Acceptor &middot; B=Both &middot; &middot;=None&emsp;
+      Blue=Donor &middot; Orange=Acceptor &middot; Purple=Both &middot; Dark=Neither&emsp;
       &#9733; = overlaps epitope 99&ndash;132
     </div>
     <div style="overflow-x:auto">
@@ -1498,8 +1499,9 @@ function aaCells(seq, scores) {
 // ─── Physicochemical property lookups ──────────────────────────────────────
 const HYDRO_MAP = {
   A:'H',V:'H',I:'H',L:'H',M:'H',F:'H',W:'H',C:'H',P:'H', // Hydrophobic
-  G:'A',S:'A',T:'A',Y:'A',H:'A',                           // Amphipathic
-  D:'P',E:'P',K:'P',R:'P',N:'P',Q:'P'                      // Polar/Hydrophilic
+  G:'A',S:'A',T:'A',Y:'A',H:'A',                           // Amphipathic (weak polar)
+  K:'PL',                                                   // Polar-light (1 N in ε-amino)
+  D:'PD',E:'PD',R:'PD',N:'PD',Q:'PD'                      // Polar-dark  (2+ N or O atoms)
 };
 const IONIC_MAP = {
   K:'+',R:'+',H:'+',  // Cationic
@@ -1514,23 +1516,24 @@ const HBOND_MAP = {
 };
 
 function hydroColor(aa) {
-  const c = HYDRO_MAP[aa] || 'P';
-  if (c==='H') return {bg:'#F59E0B',tc:'#0F172A',lbl:'H'};
-  if (c==='A') return {bg:'#14B8A6',tc:'#0F172A',lbl:'A'};
-  return              {bg:'#3B82F6',tc:'#fff',    lbl:'P'};
+  const c = HYDRO_MAP[aa] || 'H';
+  if (c==='H')  return {bg:'#DC2626',tc:'#fff',    lbl:aa}; // Hydrophobic  — red
+  if (c==='A')  return {bg:'#475569',tc:'#E2E8F0', lbl:aa}; // Amphipathic  — grey
+  if (c==='PL') return {bg:'#93C5FD',tc:'#0F172A', lbl:aa}; // Polar-light  — light blue (K)
+  return               {bg:'#1D4ED8',tc:'#fff',    lbl:aa}; // Polar-dark   — dark blue  (D,E,R,N,Q)
 }
 function ionColor(aa) {
   const c = IONIC_MAP[aa];
-  if (c==='+') return {bg:'#10B981',tc:'#fff',   lbl:'+'};
-  if (c==='-') return {bg:'#EF4444',tc:'#fff',   lbl:'\u2212'};
-  return              {bg:'#1E293B',tc:'#475569', lbl:'\u00B7'};
+  if (c==='+') return {bg:'#10B981',tc:'#fff',   lbl:aa};
+  if (c==='-') return {bg:'#EF4444',tc:'#fff',   lbl:aa};
+  return              {bg:'#1E293B',tc:'#475569', lbl:aa};
 }
 function hbondColor(aa) {
   const c = HBOND_MAP[aa];
-  if (c==='D') return {bg:'#3B82F6',tc:'#fff',   lbl:'D'};
-  if (c==='A') return {bg:'#F97316',tc:'#0F172A', lbl:'A'};
-  if (c==='B') return {bg:'#8B5CF6',tc:'#fff',   lbl:'B'};
-  return              {bg:'#1E293B',tc:'#475569', lbl:'\u00B7'};
+  if (c==='D') return {bg:'#3B82F6',tc:'#fff',   lbl:aa};
+  if (c==='A') return {bg:'#F97316',tc:'#0F172A', lbl:aa};
+  if (c==='B') return {bg:'#8B5CF6',tc:'#fff',   lbl:aa};
+  return              {bg:'#1E293B',tc:'#475569', lbl:aa};
 }
 function propCells(seq, colorFn) {
   return seq.split('').map(aa => {
