@@ -14,6 +14,7 @@ Pipeline
 4.  Check host CMA membership → check_cma_network_membership()
 5a. Source A: find_homologous_pairs()     → seq_aligner pairs
 5b. Source B: mclachlan_to_pairs()        → mclachlan pairs   [if mclachlan_hits supplied]
+5c. Source C: mclachlan_to_pairs(sw_hits) → sw pairs          [if sw_hits supplied]
 6.  Merge + _dedup_pairs(tolerance=4)    → merged pairs, re-ranked
 7.  SEAModule.run(merged_pairs, ...)      → sea_results
 7b. apply_epitope_proximity_bonus()       → bonus scores for hits in known epitopes
@@ -391,6 +392,7 @@ def mclachlan_to_pairs(
     viral_seq:         str,
     min_composite:     float = 15.0,
     max_pairs:         int   = 200,
+    source:            str   = "mclachlan",
 ) -> List[Dict]:
     """
     Convert McLachlan v3 hit dicts (from the cross-protein comparator) to the
@@ -406,6 +408,9 @@ def mclachlan_to_pairs(
     viral_seq       : full viral protein sequence (stored in protein1 field)
     min_composite   : composite_primary threshold — hits below this are skipped
     max_pairs       : maximum number of pairs to return (sorted by composite_primary DESC)
+    source          : value written into the 'source' field of every pair dict.
+                      Use "mclachlan" for gapless McLachlan v3 hits (default)
+                      and "sw" for gap-tolerant Smith-Waterman hits.
 
     Returns
     -------
@@ -417,7 +422,7 @@ def mclachlan_to_pairs(
         protein1         str    full viral_seq
         similarity_score float  min(layer2_cross_mean / 4.0, 1.0)
         rank             int    0  (re-assigned by Orchestrator after dedup)
-        source           str    'mclachlan'
+        source           str    value of the source parameter
     """
     # Filter
     filtered = [
@@ -448,7 +453,7 @@ def mclachlan_to_pairs(
                 "protein1":         viral_seq,
                 "similarity_score": round(similarity_score, 4),
                 "rank":             0,
-                "source":           "mclachlan",
+                "source":           source,
                 # carry forward for diagnostics
                 "_composite_primary": hit.get("composite_primary", 0.0),
                 "_layer2_cross_mean": raw_sim,
@@ -1588,6 +1593,10 @@ def orchestrate(
     mclachlan_hits:            Optional[List[Dict]] = None,
     mclachlan_min_composite:   float = 15.0,
     mclachlan_max_pairs:       int   = 200,
+    # Smith-Waterman pair source
+    sw_hits:                   Optional[List[Dict]] = None,
+    sw_min_composite:          float = 14.5,
+    sw_max_pairs:              int   = 200,
     # Sequence aligner pair source
     seq_aligner_min_identity:  float = 0.33,
     seq_aligner_window:        int   = 12,
@@ -1624,6 +1633,10 @@ def orchestrate(
                               Pass None to skip this pair source
     mclachlan_min_composite : minimum composite_primary score to include a McLachlan hit
     mclachlan_max_pairs     : maximum McLachlan pairs to use
+    sw_hits                 : pre-computed Smith-Waterman hit dicts (compatible schema)
+                              Pass None to skip this pair source
+    sw_min_composite        : minimum composite_primary score to include an SW hit
+    sw_max_pairs            : maximum SW pairs to use  
     seq_aligner_min_identity: minimum identity fraction for find_homologous_pairs()
     seq_aligner_window      : sliding window length for find_homologous_pairs()
     seq_aligner_step        : stride for find_homologous_pairs()
@@ -1703,8 +1716,22 @@ def orchestrate(
 
     n_mclachlan = len(mc_pairs)
 
+    # ── Step 5c: Smith-Waterman pairs (optional third source) ─────────────
+    if sw_hits is not None:
+        sw_pairs = mclachlan_to_pairs(
+            sw_hits,
+            viral_seq,
+            min_composite = sw_min_composite,
+            max_pairs     = sw_max_pairs,
+            source        = "sw",
+        )
+    else:
+        sw_pairs = []
+
+    n_sw = len(sw_pairs)
+
     # ── Step 6: Merge, dedup, re-rank ─────────────────────────────────────
-    merged = aligner_pairs + mc_pairs
+    merged = aligner_pairs + mc_pairs + sw_pairs
     merged_after_dedup = _dedup_pairs(merged, tolerance=4)
 
     # Assign consecutive 1-based ranks (sorted by similarity_score DESC)
@@ -1714,6 +1741,7 @@ def orchestrate(
     pair_source_counts = {
         "seq_aligner": n_seq_aligner,
         "mclachlan":   n_mclachlan,
+        "sw":           n_sw,
         "merged":      len(merged),
         "after_dedup": len(merged_after_dedup),
     }
