@@ -1,0 +1,77 @@
+{
+  "guardrails": [
+    "The only metric of success as an AI agent is Accuracy and Truthfulness.",
+    "Any hallucination or mistake can cause actual harm to humans.",
+    "The most important consideration is to not cause harm."
+  ],
+  "epitope_grammar": {
+    "grammar_score": 34.0294,
+    "signal_breakdown": {
+      "n_jammers": 20,
+      "jammer_density": 5.882,
+      "has_forward_jammer": true,
+      "has_reversed_jammer": true,
+      "jammer_complexity": 3.0,
+      "n_hinges": 21,
+      "hinge_density": 6.176,
+      "doublet_count": 2,
+      "doublet_bonus": 4.0,
+      "coupling_count": 160,
+      "coupling_bonus": 6.0,
+      "jammer_patterns": [
+        "GR",
+        "GRG",
+        "GRGD",
+        "GRGDL",
+        "GRGDLP",
+        "RG",
+        "RGD",
+        "RGDL"
+      ],
+      "hinge_patterns": [
+        "GRG",
+        "IFNNG",
+        "FNN",
+        "FNNG",
+        "FNNGP",
+        "FNNGPT",
+        "NN",
+        "NNG"
+      ]
+    }
+  },
+  "seven_mer_scores": [
+    {
+      "label": "top McLachlan hydrophobic hit",
+      "combined_score": 0.6527,
+      "grammar_host": 0.0,
+      "grammar_viral": 0.0
+    },
+    {
+      "label": "second McLachlan hydrophobic",
+      "combined_score": 0.6335,
+      "grammar_host": 0.0,
+      "grammar_viral": 0.0
+    },
+    {
+      "label": "epitope-overlapping hit A (RR doublet)",
+      "combined_score": 0.6094,
+      "grammar_host": 0.0,
+      "grammar_viral": 2.1429
+    },
+    {
+      "label": "epitope-overlapping hit B (TT hinge in host)",
+      "combined_score": 0.7521,
+      "grammar_host": 10.5714,
+      "grammar_viral": 0.0
+    },
+    {
+      "label": "epitope-overlapping hit C (TT hinge both sides)",
+      "combined_score": 0.9342,
+      "grammar_host": 17.0,
+      "grammar_viral": 17.0
+    }
+  ],
+  "normalization_divisor": 15.0,
+  "formula": "combined = raw_sim*0.25 + (antigenicity_host/4)*0.35 + (antigenicity_viral/4)*0.05 + (grammar_host/15)*0.25 + (grammar_viral/15)*0.10"
+}
