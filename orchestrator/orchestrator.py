@@ -77,6 +77,12 @@ except ImportError as exc:  # pragma: no cover
         f"Original error: {exc}"
     )
 
+try:
+    from antigenicity_scorer import AntigenicityScorer as _AntigenicityScorer
+    _ANTIGENICITY_SCORER = _AntigenicityScorer()
+except ImportError:  # pragma: no cover
+    _ANTIGENICITY_SCORER = None   # scorer unavailable — fall back to McLachlan-only
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  RESULT DATACLASS
@@ -445,9 +451,27 @@ def mclachlan_to_pairs(
             raw_sim = hit.get("layer2_cross_mean", 0.0)
             similarity_score = min(raw_sim / 4.0, 1.0)
 
+            seq1 = hit["motif"]
+            seq2 = hit.get("p2_window", "")
+
+            # ── Antigenicity scoring (new channel — overnight analysis 2026-10-01) ──
+            # Formula: McLachlan × 0.4 + host_antigenicity/4 × 0.5 + viral_antigenicity/4 × 0.1
+            # Normalisation: raw antigenicity 0-60 range → divide by 4.0 → McLachlan-equivalent
+            antigenicity_host   = 0.0
+            antigenicity_viral  = 0.0
+            combined_score      = raw_sim  # default when scorer unavailable
+            if _ANTIGENICITY_SCORER is not None:
+                antigenicity_host  = _ANTIGENICITY_SCORER.score_window(seq2)["antigenicity_score"]
+                antigenicity_viral = _ANTIGENICITY_SCORER.score_window(seq1)["antigenicity_score"]
+                combined_score = (
+                    raw_sim * 0.4
+                    + (antigenicity_host  / 4.0) * 0.5
+                    + (antigenicity_viral / 4.0) * 0.1
+                )
+
             pairs.append({
-                "seq1":             hit["motif"],
-                "seq2":             hit.get("p2_window", ""),
+                "seq1":             seq1,
+                "seq2":             seq2,
                 "position1":        p1_start,
                 "position2":        p2_start,
                 "protein1":         viral_seq,
@@ -455,12 +479,19 @@ def mclachlan_to_pairs(
                 "rank":             0,
                 "source":           source,
                 # carry forward for diagnostics
-                "_composite_primary": hit.get("composite_primary", 0.0),
-                "_layer2_cross_mean": raw_sim,
+                "_composite_primary":  hit.get("composite_primary", 0.0),
+                "_layer2_cross_mean":  raw_sim,
+                "_antigenicity_host":  round(antigenicity_host,  2),
+                "_antigenicity_viral": round(antigenicity_viral, 2),
+                "_combined_score":     round(combined_score,     4),
             })
         except (KeyError, ValueError, IndexError):
             # Malformed hit — skip silently
             continue
+
+    # Re-sort by combined score when scorer is available (McLachlan order retained otherwise)
+    if _ANTIGENICITY_SCORER is not None:
+        pairs.sort(key=lambda p: p["_combined_score"], reverse=True)
 
     return pairs
 
