@@ -40,6 +40,7 @@ from orchestrator.orchestrator import (
     _check_degradation_proximity,
     _phospho_exposure_score,
     _detect_super_epitope_pairs,
+    _compute_proximity_event_score,
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -988,6 +989,113 @@ class TestCheckDegradationProximityLIR(unittest.TestCase):
         self.assertTrue(r["proximal_kferq_motif"])
         self.assertTrue(r["proximal_lir_motif"])
         self.assertTrue(r["proximal_deg_motif"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Unit tests — _compute_proximity_event_score()
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestComputeProximityEventScore(unittest.TestCase):
+    """
+    Tests for the additive distance-weighted proximity event scorer.
+
+    Default weights: w_viral_lir=1.0, w_host_lir=1.5, w_viral_kferq=1.0,
+                     w_host_kferq=2.0  →  max_possible=5.5
+    """
+
+    def _dp(self, **kwargs):
+        """Build a minimal degradation-proximity dict."""
+        return {
+            "viral_lir_dist":   kwargs.get("vl"),
+            "host_lir_dist":    kwargs.get("hl"),
+            "viral_kferq_dist": kwargs.get("vk"),
+            "host_kferq_dist":  kwargs.get("hk"),
+        }
+
+    def test_all_none_returns_zero(self):
+        """No proximal motifs → all components 0 → proximity_event_score=0."""
+        r = _compute_proximity_event_score(self._dp())
+        self.assertEqual(r["proximity_event_score"], 0.0)
+        self.assertEqual(r["viral_lir_score"],  0.0)
+        self.assertEqual(r["host_lir_score"],   0.0)
+        self.assertEqual(r["viral_kferq_score"],0.0)
+        self.assertEqual(r["host_kferq_score"], 0.0)
+
+    def test_all_at_zero_distance_returns_one(self):
+        """All four signals at dist=0 → normalised score = 1.0."""
+        r = _compute_proximity_event_score(self._dp(vl=0, hl=0, vk=0, hk=0))
+        self.assertAlmostEqual(r["proximity_event_score"], 1.0, places=4)
+
+    def test_single_host_kferq_at_zero_normalised_correctly(self):
+        """host_kferq dist=0 only: raw=2.0, max=5.5 → score≈0.3636."""
+        r = _compute_proximity_event_score(self._dp(hk=0))
+        expected = round(2.0 / 5.5, 4)
+        self.assertAlmostEqual(r["proximity_event_score"], expected, places=4)
+
+    def test_distance_equals_window_gives_zero_component(self):
+        """dist == window → component = 0, score from other signals."""
+        r = _compute_proximity_event_score(self._dp(vl=30, hl=0))
+        self.assertEqual(r["viral_lir_score"], 0.0)
+        # host_lir component: (1 - 0/30) * 1.5 = 1.5, normalised = 1.5/5.5
+        self.assertAlmostEqual(r["host_lir_score"], 1.0, places=4)
+
+    def test_beyond_window_clamped_to_zero(self):
+        """dist > window must not produce negative components."""
+        r = _compute_proximity_event_score(self._dp(vl=100))
+        self.assertEqual(r["viral_lir_score"], 0.0)
+        self.assertEqual(r["proximity_event_score"], 0.0)
+
+    def test_output_keys_present(self):
+        """Return dict must carry all five expected keys."""
+        r = _compute_proximity_event_score(self._dp(hl=5))
+        for key in ("viral_lir_score", "host_lir_score",
+                    "viral_kferq_score", "host_kferq_score",
+                    "proximity_event_score"):
+            self.assertIn(key, r)
+
+    def test_score_bounded_to_one(self):
+        """proximity_event_score must never exceed 1.0."""
+        r = _compute_proximity_event_score(self._dp(vl=0, hl=0, vk=0, hk=0))
+        self.assertLessEqual(r["proximity_event_score"], 1.0)
+
+    def test_custom_window_scales_correctly(self):
+        """Halving the window doubles the decay rate."""
+        r30 = _compute_proximity_event_score(self._dp(hl=15), window=30)
+        r15 = _compute_proximity_event_score(self._dp(hl=15), window=15)
+        # window=30, dist=15 → component = 0.5; window=15, dist=15 → component=0
+        self.assertGreater(r30["proximity_event_score"], 0.0)
+        self.assertEqual(r15["proximity_event_score"], 0.0)
+
+    def test_phase2_pairs_carry_new_fields(self):
+        """phase2_enriched_pairs dicts must include new proximity event fields."""
+        import json, os
+        data_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "protein_degradation",
+            "Q9WMX2_vs_P05181_scored_v3.json",
+        )
+        if not os.path.exists(data_path):
+            self.skipTest("v3 JSON not present — integration fixture unavailable")
+        from orchestrator.orchestrator import orchestrate
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+        viral_seq = "MSTNPKPQRKTKRNTNRRPQDVKFPGGGQIVGGVYLLPRRGPRLGVRAARKVSERDKSERVNISDADDGSQSQKIQEAGQKQKQKQK"
+        host_seq  = "MGSALMSTLALVPVLFIILAFSSQFQTELESASASEASASQASAAASN"
+        raw = json.load(open(data_path))
+        hits = raw["hits"][:5]
+        result = orchestrate(
+            viral_seq, host_seq,
+            virus_name="HCV", viral_protein_name="TestVP", host_protein_name="TestHP",
+            mclachlan_hits=hits,
+        )
+        new_fields = (
+            "viral_lir_score", "host_lir_score",
+            "viral_kferq_score", "host_kferq_score",
+            "proximity_event_score", "proximity_boost",
+            "total_event_signal",
+        )
+        for p in result.phase2_enriched_pairs:
+            for field in new_fields:
+                self.assertIn(field, p, msg=f"Field '{field}' missing from phase2_enriched_pairs")
 
 
 if __name__ == "__main__":
