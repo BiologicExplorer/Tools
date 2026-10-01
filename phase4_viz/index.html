@@ -1,875 +1,1509 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>CYP2E1 Autoimmunogenicity — Homologous Motif Visualization (Phase 1)</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CYP2E1 Autoimmunogenicity — Phase 1 McLachlan Homology</title>
+  <!--
+    GUARDRAIL: The only metric of success as an AI agent is Accuracy and Truthfulness.
+    GUARDRAIL: Any hallucination or mistake can cause actual harm to humans.
+    GUARDRAIL: The most important consideration is to not cause harm.
+    Pipeline:  BiologicExplorer/Tools SEA Orchestrator — Phase 1
+    Method:    Two-pass McLachlan sliding window (11-mer broad seed ≥22.0 / 5-mer core ≥17.5)
+    Host:      P05181 CYP2E1 493 aa (UniProt canonical — live-fetched)
+    Viral:     Q9WMX2 HCV polyprotein 3010 aa (UniProt canonical — live-fetched)
+    Epitope:   P05181 residues 99-132 GRGDLPAFHAHRDRGIIFNNGPTWKDIRRFSLTT (live-verified)
+    Structures: PDB 3KOH (CYP2E1), 3KQL (NS3), 1ZH1 (NS5A), 3FQL (NS5B)
+    DO NOT modify pair data without re-running phase1_twopass_search.py from canonical FASTA
+  -->
+  <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://3dmol.org/build/3Dmol-min.js"></script>
   <style>
-    /* === GUARDRAILS ===
-       The only metric of success as an AI agent is Accuracy and Truthfulness.
-       Any hallucination or mistake can cause actual harm to humans.
-       The most important consideration is to not cause harm.
-    */
-    :root {
-      --bg: #0d1117;
-      --card-bg: #161b22;
-      --border: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
+    *{box-sizing:border-box}
+    body{background:#0F172A;color:#CBD5E1;font-family:system-ui,-apple-system,sans-serif;margin:0}
+    .chip{
+      cursor:pointer;font-family:'Courier New',monospace;font-size:10px;font-weight:700;
+      padding:3px 7px;border-radius:4px;border:1px solid rgba(255,255,255,.12);
+      transition:all .12s ease;user-select:none;white-space:nowrap;line-height:1.4;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      min-height: 100vh;
+    .chip:hover{filter:brightness(1.2);transform:translateY(-1px)}
+    .chip.off{background:#334155!important;color:#64748B!important;border-color:#475569!important;opacity:.5}
+    .viewer-wrap{width:100%;height:380px;position:relative;border-radius:8px;overflow:hidden;background:#1E293B}
+    .aa-cell{
+      display:inline-block;width:17px;height:21px;line-height:21px;text-align:center;
+      font-family:'Courier New',monospace;font-size:12px;font-weight:700;border-radius:2px;margin:0 .5px
     }
-
-    /* ── HEADER ── */
-    header {
-      background: linear-gradient(135deg, #0d1117 0%, #1a1f2e 50%, #0d1117 100%);
-      border-bottom: 1px solid var(--border);
-      padding: 22px 32px 18px;
-    }
-    header h1 {
-      font-size: 1.35rem;
-      font-weight: 700;
-      letter-spacing: 0.01em;
-      color: #f0f6ff;
-    }
-    header .subtitle {
-      font-size: 0.82rem;
-      color: var(--muted);
-      margin-top: 5px;
-    }
-
-    /* ── COMPARISON TABLE SECTION ── */
-    .comparison-section {
-      padding: 18px 24px 6px;
-    }
-    .comparison-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px 18px 14px;
-    }
-    .section-title {
-      font-size: 0.78rem;
-      font-weight: 700;
-      color: #c9d1d9;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      margin-bottom: 10px;
-    }
-    .aa-legend-row {
-      display: flex;
-      gap: 18px;
-      align-items: center;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-    }
-    .aa-legend-label {
-      font-size: 0.72rem;
-      color: #8b949e;
-      font-weight: 600;
-    }
-    .aa-legend-item {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 0.70rem;
-      color: var(--muted);
-    }
-    .aa-swatch {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 17px; height: 20px;
-      border-radius: 2px;
-      font-family: 'Courier New', monospace;
-      font-size: 0.70rem;
-      font-weight: 700;
-    }
-    .aa-swatch-s { background: rgba(34,197,94,0.30); color: #4ade80; }
-    .aa-swatch-p { background: rgba(251,191,36,0.25); color: #fbbf24; }
-    .aa-swatch-n { background: rgba(99,102,106,0.12); color: #6b7280; }
-    .aa-legend-note {
-      margin-left: auto;
-      font-size: 0.67rem;
-      color: #444c56;
-      font-style: italic;
-    }
-
-    .comparison-table-wrap { overflow-x: auto; }
-    .comparison-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.71rem;
-    }
-    .comparison-table th {
-      text-align: left;
-      padding: 4px 10px 6px;
-      color: var(--muted);
-      font-weight: 600;
-      border-bottom: 1px solid var(--border);
-      letter-spacing: 0.04em;
-      white-space: nowrap;
-    }
-    .comparison-table td {
-      padding: 4px 8px;
-      border-bottom: 1px solid rgba(48,54,61,0.35);
-      vertical-align: middle;
-    }
-    .comparison-table tr:last-child td { border-bottom: none; }
-    .comparison-table tr:hover td { background: rgba(255,255,255,0.02); }
-
-    .pair-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      font-family: 'Courier New', monospace;
-      font-weight: 700;
-      font-size: 0.70rem;
-      white-space: nowrap;
-    }
-    .pair-dot {
-      width: 9px; height: 9px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .seq-display {
-      display: inline-flex;
-      gap: 1px;
-    }
-    .aa-cell {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 17px; height: 21px;
-      font-family: 'Courier New', monospace;
-      font-size: 0.73rem;
-      font-weight: 700;
-      border-radius: 2px;
-    }
-    .arrow-col {
-      font-size: 0.90rem;
-      color: #3a4250;
-      text-align: center;
-      padding: 4px 2px;
-    }
-    .comp-val {
-      font-family: 'Courier New', monospace;
-      color: #8b949e;
-      font-size: 0.69rem;
-    }
-    .pos-tag {
-      font-size: 0.67rem;
-      color: var(--muted);
-      white-space: nowrap;
-    }
-    .struct-pill {
-      font-size: 0.60rem;
-      font-weight: 700;
-      padding: 1px 5px;
-      border-radius: 3px;
-      background: rgba(88,166,255,0.10);
-      color: #58a6ff;
-      border: 1px solid rgba(88,166,255,0.22);
-      margin-right: 3px;
-    }
-
-    /* ── MAIN GRID ── */
-    .main-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      grid-template-rows: auto auto;
-      gap: 16px;
-      padding: 18px 24px;
-    }
-    .viewer-panel {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
-    }
-    .panel-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 9px 14px 8px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(255,255,255,0.02);
-    }
-    .panel-title { font-size: 0.86rem; font-weight: 700; color: #c9d1d9; }
-    .panel-subtitle { font-size: 0.69rem; color: var(--muted); margin-top: 2px; }
-    .pdb-badge {
-      font-size: 0.67rem;
-      font-family: 'Courier New', monospace;
-      font-weight: 700;
-      background: rgba(88,166,255,0.12);
-      color: #58a6ff;
-      border: 1px solid rgba(88,166,255,0.3);
-      padding: 2px 8px;
-      border-radius: 6px;
-      flex-shrink: 0;
-    }
-    .viewer-container {
-      position: relative;
-      width: 100%;
-      height: 370px;
-    }
-    .mol-viewer { width: 100%; height: 100%; }
-    .loading-overlay {
-      position: absolute; inset: 0;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(13,17,23,0.85);
-      z-index: 10;
-      font-size: 0.78rem; color: var(--muted);
-      pointer-events: none;
-      transition: opacity 0.4s;
-    }
-    .loading-overlay.hidden { opacity: 0; pointer-events: none; }
-    .motif-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      padding: 8px 12px;
-      border-top: 1px solid var(--border);
-      background: rgba(255,255,255,0.012);
-      min-height: 38px;
-    }
-    /* Each chip is a <button>; active/inactive toggled by JS */
-    .motif-chip {
-      font-size: 0.62rem;
-      font-family: 'Courier New', monospace;
-      font-weight: 700;
-      padding: 3px 8px;
-      border-radius: 4px;
-      letter-spacing: 0.04em;
-      cursor: pointer;
-      user-select: none;
-      transition: opacity 0.18s, filter 0.18s;
-      border-width: 1px;
-      border-style: solid;
-      background: transparent;
-      outline: none;
-    }
-    .chip-active  { opacity: 1.0; }
-    .chip-inactive { opacity: 0.20; filter: grayscale(0.65); }
-
-    /* ── BOTTOM SECTION ── */
-    .bottom-section {
-      display: grid;
-      grid-template-columns: 340px 1fr;
-      gap: 16px;
-      padding: 0 24px 24px;
-    }
-    .legend-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 15px;
-    }
-    .legend-title {
-      font-size: 0.76rem;
-      font-weight: 700;
-      color: #c9d1d9;
-      margin-bottom: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .legend-row {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      margin-bottom: 7px;
-    }
-    .legend-swatch {
-      width: 10px; height: 10px;
-      border-radius: 2px;
-      flex-shrink: 0;
-    }
-    .legend-pair-id {
-      font-family: 'Courier New', monospace;
-      font-weight: 700;
-      font-size: 0.69rem;
-      min-width: 28px;
-    }
-    .legend-seqs {
-      font-family: 'Courier New', monospace;
-      font-size: 0.68rem;
-      color: #c9d1d9;
-    }
-    .legend-seqs .sep { color: #3a4250; margin: 0 3px; }
-    .legend-pos {
-      font-size: 0.63rem;
-      color: var(--muted);
-      margin-left: auto;
-      white-space: nowrap;
-    }
-    .legend-offset {
-      margin-top: 12px;
-      padding-top: 10px;
-      border-top: 1px solid var(--border);
-      font-size: 0.69rem;
-      color: var(--muted);
-      line-height: 1.7;
-    }
-
-    .details-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 15px;
-      overflow-x: auto;
-    }
-    .details-title {
-      font-size: 0.76rem;
-      font-weight: 700;
-      color: #c9d1d9;
-      margin-bottom: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    table { width: 100%; border-collapse: collapse; font-size: 0.70rem; }
-    th {
-      text-align: left;
-      padding: 4px 8px 6px;
-      color: var(--muted);
-      font-weight: 600;
-      border-bottom: 1px solid var(--border);
-      letter-spacing: 0.04em;
-      white-space: nowrap;
-    }
-    td {
-      padding: 4px 8px;
-      border-bottom: 1px solid rgba(48,54,61,0.45);
-      font-family: 'Courier New', monospace;
-      vertical-align: middle;
-    }
-    tr:last-child td { border-bottom: none; }
-    .cell-label {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      font-size: 0.67rem;
-      color: var(--muted);
-    }
-    .score-badge {
-      display: inline-block;
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-size: 0.65rem;
-      font-weight: 700;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-    }
-    .grammar-bar {
-      display: inline-block;
-      height: 5px;
-      border-radius: 3px;
-      background: linear-gradient(90deg, #00d4ff, #c084fc);
-      min-width: 4px;
-    }
-
-    footer {
-      text-align: center;
-      padding: 14px;
-      font-size: 0.69rem;
-      color: var(--muted);
-      border-top: 1px solid var(--border);
-    }
+    .card{background:#1E293B;border:1px solid #334155;border-radius:12px;padding:20px 24px;margin-bottom:20px}
+    .card-title{font-size:1rem;font-weight:600;color:#E2E8F0;margin:0 0 3px}
+    .card-sub{font-size:.72rem;color:#64748B;margin:0 0 14px;line-height:1.5}
+    table{width:100%;border-collapse:separate;border-spacing:0 3px}
+    thead th{color:#64748B;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+             padding:6px 10px;text-align:left;border-bottom:1px solid #334155}
+    tbody tr{background:#0F172A;transition:background .1s}
+    tbody tr:hover{background:#162032}
+    tbody td{padding:7px 10px;vertical-align:middle}
+    .badge-ns3{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#1e3a5f;color:#93c5fd;border:1px solid #1d4ed880}
+    .badge-ns5a{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#052e16;color:#6ee7b7;border:1px solid #05966980}
+    .badge-ns5b{font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:#2a1515;color:#fca5a5;border:1px solid #ef444480}
   </style>
 </head>
 <body>
+<div style="max-width:1600px;margin:0 auto;padding:28px 16px 60px">
 
-<header>
-  <h1>CYP2E1 / HCV Polyprotein — Homologous Motif Structural Map
-    <span style="font-weight:400;color:var(--muted)">· Phase 1 Visualization</span></h1>
-  <div class="subtitle">
-    Split-epitope scanning (SEA) · McLachlan + grammar scoring · 13 unique homologous pairs across 3 HCV structures
-    · Each color = one unique viral/CYP2E1 pair · Click sequence chips to toggle ribbon coloring
+  <!-- HEADER -->
+  <header style="text-align:center;margin-bottom:32px">
+    <div style="font-size:11px;font-family:monospace;color:#475569;margin-bottom:8px;letter-spacing:.08em">
+      BiologicExplorer &middot; SEA Orchestrator &middot; Phase 1
+    </div>
+    <h1 style="font-size:2rem;font-weight:700;color:#F1F5F9;margin:0 0 6px">CYP2E1 Autoimmunogenicity Analysis</h1>
+    <p style="color:#94A3B8;font-size:.9rem;margin:0 0 4px">Phase 1 &middot; McLachlan Two-Pass Homology Search &middot; 11-mer Broad Seed &rarr; 5-mer Core</p>
+    <p style="color:#64748B;font-size:.75rem;margin:0 0 14px">
+      HCV Q9WMX2 (3010 aa) &times; CYP2E1 P05181 (493 aa) &middot; 17 confirmed pairs &middot; 3 epitope-overlapping
+    </p>
+    <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px">
+      <span style="font-size:11px;padding:3px 12px;border-radius:20px;background:#1e3a5f;color:#93c5fd;border:1px solid #1d4ed8">NS3 Helicase &middot; 5 pairs</span>
+      <span style="font-size:11px;padding:3px 12px;border-radius:20px;background:#052e16;color:#6ee7b7;border:1px solid #059669">NS5A Domain I &middot; 4 pairs</span>
+      <span style="font-size:11px;padding:3px 12px;border-radius:20px;background:#2a1515;color:#fca5a5;border:1px solid #ef4444">NS5B Polymerase &middot; 8 pairs</span>
+      <span style="font-size:11px;padding:3px 12px;border-radius:20px;background:#3d2e00;color:#fcd34d;border:1px solid #f59e0b">&#9733; 3 epitope-overlapping (P15/P16/P17)</span>
+    </div>
+  </header>
+
+  <!-- S1: HCV POLYPROTEIN SVG -->
+  <div class="card">
+    <div class="card-title">&#9312; HCV Polyprotein Map &middot; Q9WMX2 &middot; 3010 aa</div>
+    <div class="card-sub">
+      Tick marks show 11-mer window positions for each homologous pair.
+      Thick colored segment = core 5-mer; thin line = flanking context window.
+      &#9733; = pair overlaps CYP2E1 autoantibody epitope (residues 99&ndash;132).
+    </div>
+    <div id="svg-polyprotein" style="overflow-x:auto"></div>
+    <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;font-size:11px;color:#475569">
+      <span><span style="color:#93C5FD;font-weight:700">&#9646;</span> NS3 helicase 1215&ndash;1650</span>
+      <span><span style="color:#6EE7B7;font-weight:700">&#9646;</span> NS5A ~2008&ndash;2170</span>
+      <span><span style="color:#FCA5A5;font-weight:700">&#9646;</span> NS5B 2421&ndash;2989</span>
+      <span style="color:#FCD34D">&#9733; = epitope overlap</span>
+    </div>
   </div>
-</header>
 
-<!-- ════════════════════════════════════════════════════════
-     COMPARISON TABLE — above the 3D models
-     Each row: pair label (colored) · viral 7-mer (per-AA bg) → CYP2E1 7-mer (per-AA bg) · scores
-     Sequence names share the same color as the highlighted ribbons below.
-     ════════════════════════════════════════════════════════ -->
-<section class="comparison-section">
-  <div class="comparison-card">
-    <div class="section-title">Per-Amino-Acid Homology — McLachlan 1972 Scoring (raw 1–6 scale)</div>
-    <div class="aa-legend-row">
-      <span class="aa-legend-label">Position homology:</span>
-      <span class="aa-legend-item">
-        <span class="aa-swatch aa-swatch-s">A</span> Strong (score ≥ 4)
+  <!-- S2: VIRAL 3D PANELS -->
+  <div class="card">
+    <div class="card-title">&#9313; Viral Protein Structures &mdash; McLachlan Homology Coloring</div>
+    <div class="card-sub">
+      Cartoon ribbon. Core 5-mer = full pair color &middot; Flanking context = faded blend &middot; Rest = slate-700.
+      Click any sequence chip to toggle that pair on/off across all panels.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px">
+
+      <div style="background:#0F172A;border:1px solid #334155;border-radius:10px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:600;color:#93C5FD">NS3 Helicase &middot; PDB 3KQL</span>
+          <span style="font-size:10px;color:#475569;font-family:monospace">Chain A &middot; 189&ndash;624</span>
+        </div>
+        <div id="viewer-ns3" class="viewer-wrap"></div>
+        <div id="chips-ns3" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px"></div>
+      </div>
+
+      <div style="background:#0F172A;border:1px solid #334155;border-radius:10px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:600;color:#6EE7B7">NS5A Domain I &middot; PDB 1ZH1</span>
+          <span style="font-size:10px;color:#475569;font-family:monospace">Chain A &middot; 36&ndash;198</span>
+        </div>
+        <div id="viewer-ns5a" class="viewer-wrap"></div>
+        <div id="chips-ns5a" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px"></div>
+      </div>
+
+      <div style="background:#0F172A;border:1px solid #334155;border-radius:10px;padding:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:600;color:#FCA5A5">NS5B Polymerase &middot; PDB 3FQL</span>
+          <span style="font-size:10px;color:#475569;font-family:monospace">Chain A &middot; 2&ndash;570</span>
+        </div>
+        <div id="viewer-ns5b" class="viewer-wrap"></div>
+        <div id="chips-ns5b" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- S3: CYP2E1 SVG BAR -->
+  <div class="card">
+    <div class="card-title">&#9314; CYP2E1 Linear Map &middot; P05181 &middot; 493 aa</div>
+    <div class="card-sub">
+      Amber bracket marks the confirmed autoantibody epitope (residues 99&ndash;132 &middot;
+      <code style="font-family:monospace;font-size:10px;color:#FCD34D">GRGDLPAFHAHRDRGIIFNNGPTWKDIRRFSLTT</code>).
+      Colored ticks show host-side pair window positions.
+    </div>
+    <div id="svg-cyp2e1" style="overflow-x:auto"></div>
+  </div>
+
+  <!-- S4: CYP2E1 3D PANEL -->
+  <div class="card">
+    <div class="card-title">&#9315; CYP2E1 Structure &middot; PDB 3KOH &middot; Chain A (residues 31&ndash;493)</div>
+    <div class="card-sub">
+      All 17 viral homology pairs mapped onto CYP2E1 ribbon. Colors inherited from matched viral pair.
+      &#9733; = epitope-overlapping pairs (gold/amber).
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 270px;gap:16px;align-items:start">
+      <div id="viewer-cyp" style="width:100%;height:440px;position:relative;border-radius:8px;overflow:hidden;background:#1E293B"></div>
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#94A3B8;margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">All 17 Pairs</div>
+        <div id="chips-cyp" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+        <div style="margin-top:16px;font-size:10px;color:#475569;line-height:1.8">
+          <div><span style="font-weight:700;color:#93C5FD">&#9646;</span> NS3 (blue palette)</div>
+          <div><span style="font-weight:700;color:#6EE7B7">&#9646;</span> NS5A (green palette)</div>
+          <div><span style="font-weight:700;color:#FCA5A5">&#9646;</span> NS5B (red/orange)</div>
+          <div><span style="font-weight:700;color:#FCD34D">&#9733;</span> NS5B epitope (gold/amber)</div>
+          <div style="margin-top:8px;color:#334155">Core 5-mer = full color</div>
+          <div style="color:#334155">Flanking &plusmn;6 aa = faded</div>
+          <div style="color:#334155">Rest = slate-700</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- S5: COMPARISON TABLE -->
+  <div class="card">
+    <div class="card-title">&#9316; Homology Pairs &mdash; Ranked by Core 5-mer Score</div>
+    <div class="card-sub">
+      Per-residue McLachlan homology heatmap (1972 matrix, 1&ndash;6 scale).
+      <span style="display:inline-flex;gap:3px;vertical-align:middle;margin:0 4px">
+        <span class="aa-cell" style="background:#059669;color:#fff;font-size:10px;height:17px;line-height:17px;width:15px">6</span>
+        <span class="aa-cell" style="background:#10B981;color:#fff;font-size:10px;height:17px;line-height:17px;width:15px">5</span>
+        <span class="aa-cell" style="background:#34D399;color:#0F172A;font-size:10px;height:17px;line-height:17px;width:15px">4</span>
+        <span class="aa-cell" style="background:#FBBF24;color:#0F172A;font-size:10px;height:17px;line-height:17px;width:15px">3</span>
+        <span class="aa-cell" style="background:#F59E0B;color:#0F172A;font-size:10px;height:17px;line-height:17px;width:15px">2</span>
+        <span class="aa-cell" style="background:#EF4444;color:#fff;font-size:10px;height:17px;line-height:17px;width:15px">1</span>
       </span>
-      <span class="aa-legend-item">
-        <span class="aa-swatch aa-swatch-p">A</span> Partial (score 2–3)
-      </span>
-      <span class="aa-legend-item">
-        <span class="aa-swatch aa-swatch-n">A</span> Not homologous (score = 1)
-      </span>
-      <span class="aa-legend-note">Sequence name colors match ribbon highlights in models below</span>
+      Strong (&#8805;4) &middot; Partial (2&ndash;3) &middot; Weak (1) &nbsp;|&nbsp; &#9733; = overlaps epitope 99&ndash;132
     </div>
-    <div class="comparison-table-wrap">
-      <table class="comparison-table">
-        <thead>
-          <tr>
-            <th>Pair</th>
-            <th>Viral 7-mer</th>
-            <th></th>
-            <th>CYP2E1 7-mer</th>
-            <th>Composite</th>
-            <th>Viral Structure · Position</th>
-            <th>CYP2E1 Position</th>
-          </tr>
-        </thead>
-        <tbody id="comparison-tbody"></tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- ════════════════════════════════════════════════════════
-     4-PANEL 3D VIEWER GRID
-     ════════════════════════════════════════════════════════ -->
-<div class="main-grid">
-
-  <!-- Panel 1: CYP2E1 / 3KOH -->
-  <div class="viewer-panel">
-    <div class="panel-header">
-      <div>
-        <div class="panel-title">CYP2E1 — Human Cytochrome P450 2E1</div>
-        <div class="panel-subtitle">P05181 · Autoantigen · Res 31–492 · X-ray 2.90 Å · Click chips to toggle pairs</div>
-      </div>
-      <span class="pdb-badge">3KOH</span>
-    </div>
-    <div class="viewer-container">
-      <div class="loading-overlay" id="ld-cyp2e1">Loading 3KOH…</div>
-      <div id="viewer-cyp2e1" class="mol-viewer"></div>
-    </div>
-    <div class="motif-chips" id="chips-cyp2e1">
-      <!-- Populated by JS: all 13 CYP2E1 counterpart sequences -->
+    <div style="overflow-x:auto">
+      <table id="comparison-table"></table>
     </div>
   </div>
 
-  <!-- Panel 2: NS3 / 3KQL -->
-  <div class="viewer-panel">
-    <div class="panel-header">
-      <div>
-        <div class="panel-title">NS3 Helicase — HCV Polyprotein Q9WMX2</div>
-        <div class="panel-subtitle">Res 1215–1650 · X-ray 2.50 Å · Pairs P02–P06 · Click chips to toggle</div>
-      </div>
-      <span class="pdb-badge">3KQL</span>
-    </div>
-    <div class="viewer-container">
-      <div class="loading-overlay" id="ld-ns3">Loading 3KQL…</div>
-      <div id="viewer-ns3" class="mol-viewer"></div>
-    </div>
-    <div class="motif-chips" id="chips-ns3">
-      <!-- P02–P06 viral chips populated by JS -->
-    </div>
-  </div>
+  <!-- FOOTER -->
+  <footer style="text-align:center;font-size:11px;color:#334155;margin-top:32px;padding-top:20px;border-top:1px solid #1E293B">
+    <p style="margin:0 0 4px">CYP2E1 Autoimmunogenicity Pipeline &middot; Phase 1 McLachlan Two-Pass Analysis &middot; BiologicExplorer/Tools</p>
+    <p style="margin:0 0 4px">UniProt P05181 (CYP2E1 &middot; 493 aa) &middot; Q9WMX2 (HCV polyprotein &middot; 3010 aa)</p>
+    <p style="margin:0 0 4px">PDB: 3KOH (CYP2E1) &middot; 3KQL (NS3 helicase) &middot; 1ZH1 (NS5A domain I) &middot; 3FQL (NS5B polymerase)</p>
+    <p style="margin:0;font-style:italic;color:#1E293B">All sequence comparisons use live-fetched canonical UniProt FASTA by accession &mdash; no cached strings.</p>
+  </footer>
 
-  <!-- Panel 3: NS5A / 1ZH1 -->
-  <div class="viewer-panel">
-    <div class="panel-header">
-      <div>
-        <div class="panel-title">NS5A Domain I (Zinc-binding) — HCV Q9WMX2</div>
-        <div class="panel-subtitle">Res 2008–2170 · X-ray 2.50 Å · Pairs P07–P10 · Click chips to toggle</div>
-      </div>
-      <span class="pdb-badge">1ZH1</span>
-    </div>
-    <div class="viewer-container">
-      <div class="loading-overlay" id="ld-ns5a">Loading 1ZH1…</div>
-      <div id="viewer-ns5a" class="mol-viewer"></div>
-    </div>
-    <div class="motif-chips" id="chips-ns5a">
-      <!-- P07–P10 viral chips populated by JS -->
-    </div>
-  </div>
-
-  <!-- Panel 4: NS5B / 3FQL -->
-  <div class="viewer-panel">
-    <div class="panel-header">
-      <div>
-        <div class="panel-title">NS5B RNA Polymerase — HCV Q9WMX2</div>
-        <div class="panel-subtitle">Res 2421–2989 · X-ray 1.80 Å · Pairs P01, P11–P13 · Click chips to toggle</div>
-      </div>
-      <span class="pdb-badge">3FQL</span>
-    </div>
-    <div class="viewer-container">
-      <div class="loading-overlay" id="ld-ns5b">Loading 3FQL…</div>
-      <div id="viewer-ns5b" class="mol-viewer"></div>
-    </div>
-    <div class="motif-chips" id="chips-ns5b">
-      <!-- P01, P11–P13 viral chips populated by JS -->
-    </div>
-  </div>
-
-</div><!-- /.main-grid -->
-
-<!-- ════════════════════════════════════════════════════════
-     BOTTOM SECTION: Legend + Hit Table
-     ════════════════════════════════════════════════════════ -->
-<div class="bottom-section">
-
-  <div class="legend-card">
-    <div class="legend-title">13 Unique Homologous Pairs</div>
-    <div id="legend-body"></div>
-    <div class="legend-offset">
-      <strong style="color:#8b949e">Residue numbering (DBREF-verified):</strong><br>
-      CYP2E1 (3KOH): PDB local = UniProt + 1<br>
-      NS3 (3KQL): PDB local = UniProt − 1026<br>
-      NS5A (1ZH1): PDB local = UniProt − 1972<br>
-      NS5B (3FQL): PDB local = UniProt − 2419
-    </div>
-  </div>
-
-  <div class="details-card">
-    <div class="details-title">PDB-Covered Pairs — McLachlan + Grammar Combined Scores</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Pair</th>
-          <th>Viral Motif</th>
-          <th>UniProt Pos</th>
-          <th>Structure / Local</th>
-          <th>CYP2E1 Motif</th>
-          <th>CYP2E1 Pos</th>
-          <th>Composite</th>
-          <th>Signal</th>
-        </tr>
-      </thead>
-      <tbody id="hit-table-body"></tbody>
-    </table>
-  </div>
-
-</div><!-- /.bottom-section -->
-
-<footer>
-  Phase 1 · CYP2E1/HCV SEA orchestrator pipeline · PDB: 3KOH, 3KQL, 1ZH1, 3FQL ·
-  3Dmol.js cartoon-ribbon visualization · 13 unique homologous pairs ·
-  McLachlan 1972 per-AA scoring · Residue offsets from DBREF records ·
-  This page is the foundation for Phase 4 super-epitope structural analysis.
-</footer>
+</div><!-- /max-width wrapper -->
 
 <script>
-// The only metric of success as an AI agent is Accuracy and Truthfulness.
-// Any hallucination or mistake can cause actual harm to humans.
-// The most important consideration is to not cause harm.
+// ============================================================
+// GUARDRAIL: The only metric of success as an AI agent is Accuracy and Truthfulness.
+// GUARDRAIL: Any hallucination or mistake can cause actual harm to humans.
+// GUARDRAIL: The most important consideration is to not cause harm.
+// Phase 1 McLachlan Two-Pass  |  BiologicExplorer/Tools SEA Orchestrator
+// Source: phase1_pairs_twopass.json  |  17 pairs  |  11-mer ≥22.0 / 5-mer core ≥17.5
+// ============================================================
 
-// ════════════════════════════════════════════════════════════
-// PAIRS — 13 unique homologous pairs
-// Source: Q9WMX2_vs_P05181_scored_v3.json / compute_pairs.py
-// vRMin/vRMax : local PDB residue numbers for the viral structure
-// cRMin/cRMax : local PDB residue numbers for CYP2E1 (3KOH)
-//               3KOH local = UniProt + 1
-// vUni        : first UniProt residue of viral 7-mer (for display)
-// cUni        : first UniProt residue of CYP2E1 7-mer (for display)
-// aaClass     : per-position homology class (S=strong≥4, P=partial 2-3, N=not=1)
-// ════════════════════════════════════════════════════════════
 const PAIRS = [
-  // NS5B pairs ─────────────────────────────────────────────
-  { id:'P01', color:'#ef4242',
-    viral:'KDVRNLS', vUni:2525, vstruct:'NS5B', vRMin:106, vRMax:112,
-    cyp:'KDIRRFS',   cUni:124,  cRMin:125, cRMax:131,
-    comp:16.66, aaScores:[6,6,4,6,1,2,6], aaClass:['S','S','S','S','N','P','S'] },
-
-  // NS3 pairs ──────────────────────────────────────────────
-  { id:'P02', color:'#ef9242',
-    viral:'STDSTTI', vUni:1320, vstruct:'NS3',  vRMin:294, vRMax:300,
-    cyp:'ETTSTTL',   cUni:302,  cRMin:303, cRMax:309,
-    comp:15.59, aaScores:[1,6,1,6,6,6,3], aaClass:['N','S','N','S','S','S','P'] },
-  { id:'P03', color:'#efe242',
-    viral:'LDPTFTI', vUni:1466, vstruct:'NS3',  vRMin:440, vRMax:446,
-    cyp:'FDPTFLI',   cUni:167,  cRMin:168, cRMax:174,
-    comp:17.74, aaScores:[2,6,6,6,6,1,6], aaClass:['P','S','S','S','S','N','S'] },
-  { id:'P04', color:'#adef42',
-    viral:'HIDAHFL', vUni:1567, vstruct:'NS3',  vRMin:541, vRMax:547,
-    cyp:'QREAHFL',   cUni:149,  cRMin:150, cRMax:156,
-    comp:16.12, aaScores:[2,1,3,6,6,6,6], aaClass:['P','N','P','S','S','S','S'] },
-  { id:'P05', color:'#5cef42',
-    viral:'PHPNIEE', vUni:1358, vstruct:'NS3',  vRMin:332, vRMax:338,
-    cyp:'KYPEIEE',   cUni:318,  cRMin:319, cRMax:325,
-    comp:16.12, aaScores:[1,3,6,2,6,6,6], aaClass:['N','P','S','P','S','S','S'] },
-  { id:'P06', color:'#42ef77',
-    viral:'GIYRFVT', vUni:1497, vstruct:'NS3',  vRMin:471, vRMax:477,
-    cyp:'EIQRFIT',   cUni:357,  cRMin:358, cRMax:364,
-    comp:16.12, aaScores:[1,6,1,6,6,4,6], aaClass:['N','S','N','S','S','S','S'] },
-
-  // NS5A pairs ─────────────────────────────────────────────
-  { id:'P07', color:'#42efc7',
-    viral:'QRGYKGV', vUni:2012, vstruct:'NS5A', vRMin:40,  vRMax:46,
-    cyp:'MHGYKAV',   cUni:80,   cRMin:81,  cRMax:87,
-    comp:16.12, aaScores:[2,2,6,6,6,2,6], aaClass:['P','P','S','S','S','P','S'] },
-  { id:'P08', color:'#42c7ef',
-    viral:'NGSMRIV', vUni:2041, vstruct:'NS5A', vRMin:69,  vRMax:75,
-    cyp:'VGSQRMV',   cUni:72,   cRMin:73,  cRMax:79,
-    comp:16.12, aaScores:[1,6,6,2,6,3,6], aaClass:['N','S','S','P','S','P','S'] },
-  { id:'P09', color:'#4277ef',
-    viral:'EVTFLVG', vUni:2144, vstruct:'NS5A', vRMin:172, vRMax:178,
-    cyp:'DPTFLIG',   cUni:167,  cRMin:168, cRMax:174,
-    comp:17.20, aaScores:[3,1,6,6,6,4,6], aaClass:['P','N','S','S','S','S','S'] },
-  { id:'P10', color:'#5c42ef',
-    viral:'LVGSQLP', vUni:2155, vstruct:'NS5A', vRMin:183, vRMax:189,
-    cyp:'LVPSNLP',   cUni:363,  cRMin:364, cRMax:370,
-    comp:17.74, aaScores:[6,6,1,6,2,6,6], aaClass:['S','S','N','S','P','S','S'] },
-
-  // NS5B pairs (cont.) ─────────────────────────────────────
-  { id:'P11', color:'#ad42ef',
-    viral:'LLRHHNL', vUni:2449, vstruct:'NS5B', vRMin:30,  vRMax:36,
-    cyp:'ILQHFNL',   cUni:455,  cRMin:456, cRMax:462,
-    comp:16.66, aaScores:[3,6,2,6,2,6,6], aaClass:['P','S','P','S','P','S','S'] },
-  { id:'P12', color:'#ef42e2',
-    viral:'YSPGQRV', vUni:2614, vstruct:'NS5B', vRMin:195, vRMax:201,
-    cyp:'FSTGKRV',   cUni:431,  cRMin:432, cRMax:438,
-    comp:16.66, aaScores:[4,6,1,6,2,6,6], aaClass:['S','S','N','S','P','S','S'] },
-  { id:'P13', color:'#ef4292',
-    viral:'KPEYDLE', vUni:2774, vstruct:'NS5B', vRMin:355, vRMax:361,
-    cyp:'KPEHFLN',   cUni:411,  cRMin:412, cRMax:418,
-    comp:16.12, aaScores:[6,6,6,3,1,6,2], aaClass:['S','S','S','P','N','S','P'] },
+  {
+    "id": "P01",
+    "protein": "NS3",
+    "viral_pdb": "3KQL",
+    "host_pdb": "3KOH",
+    "color": "#3B82F6",
+    "in_epitope": false,
+    "viral_seq": "THIDAHFLSQT",
+    "host_seq": "IQREAHFLLEA",
+    "viral_start": 1566,
+    "viral_end": 1576,
+    "host_start": 147,
+    "host_end": 157,
+    "score_11mer": 38.0,
+    "aa_scores_11mer": [
+      2.0,
+      2.0,
+      1.0,
+      3.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0,
+      3.0,
+      2.0
+    ],
+    "core_viral_seq": "DAHFL",
+    "core_host_seq": "EAHFL",
+    "core_viral_start": 1569,
+    "core_viral_end": 1573,
+    "core_host_start": 150,
+    "core_host_end": 154,
+    "core_score": 27.0,
+    "core_aa_scores": [
+      3.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "P",
+      "S",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 540,
+    "viral_local_end": 550,
+    "viral_core_local_s": 543,
+    "viral_core_local_e": 547,
+    "host_local_start": 148,
+    "host_local_end": 158,
+    "host_core_local_s": 151,
+    "host_core_local_e": 155
+  },
+  {
+    "id": "P02",
+    "protein": "NS3",
+    "viral_pdb": "3KQL",
+    "host_pdb": "3KOH",
+    "color": "#2563EB",
+    "in_epitope": false,
+    "viral_seq": "HPNIEEVALSS",
+    "host_seq": "YPEIEEKLHEE",
+    "viral_start": 1359,
+    "viral_end": 1369,
+    "host_start": 318,
+    "host_end": 328,
+    "score_11mer": 34.0,
+    "aa_scores_11mer": [
+      3.0,
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "core_viral_seq": "PNIEE",
+    "core_host_seq": "PEIEE",
+    "core_viral_start": 1360,
+    "core_viral_end": 1364,
+    "core_host_start": 319,
+    "core_host_end": 323,
+    "core_score": 26.0,
+    "core_aa_scores": [
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "P",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 333,
+    "viral_local_end": 343,
+    "viral_core_local_s": 334,
+    "viral_core_local_e": 338,
+    "host_local_start": 319,
+    "host_local_end": 329,
+    "host_core_local_s": 320,
+    "host_core_local_e": 324
+  },
+  {
+    "id": "P03",
+    "protein": "NS3",
+    "viral_pdb": "3KQL",
+    "host_pdb": "3KOH",
+    "color": "#60A5FA",
+    "in_epitope": false,
+    "viral_seq": "DPTFTIETTTV",
+    "host_seq": "DPTFLIGCAPC",
+    "viral_start": 1467,
+    "viral_end": 1477,
+    "host_start": 167,
+    "host_end": 177,
+    "score_11mer": 37.0,
+    "aa_scores_11mer": [
+      6.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0,
+      6.0,
+      1.0,
+      1.0,
+      2.0,
+      1.0,
+      1.0
+    ],
+    "core_viral_seq": "DPTFT",
+    "core_host_seq": "DPTFL",
+    "core_viral_start": 1467,
+    "core_viral_end": 1471,
+    "core_host_start": 167,
+    "core_host_end": 171,
+    "core_score": 25.0,
+    "core_aa_scores": [
+      6.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0
+    ],
+    "aa_classes": [
+      "S",
+      "S",
+      "S",
+      "S",
+      "N"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 441,
+    "viral_local_end": 451,
+    "viral_core_local_s": 441,
+    "viral_core_local_e": 445,
+    "host_local_start": 168,
+    "host_local_end": 178,
+    "host_core_local_s": 168,
+    "host_core_local_e": 172
+  },
+  {
+    "id": "P04",
+    "protein": "NS3",
+    "viral_pdb": "3KQL",
+    "host_pdb": "3KOH",
+    "color": "#1D4ED8",
+    "in_epitope": false,
+    "viral_seq": "QDAVSRSQRRG",
+    "host_seq": "QGNESRIQREA",
+    "viral_start": 1479,
+    "viral_end": 1489,
+    "host_start": 141,
+    "host_end": 151,
+    "score_11mer": 37.0,
+    "aa_scores_11mer": [
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      6.0,
+      6.0,
+      1.0,
+      6.0,
+      6.0,
+      1.0,
+      2.0
+    ],
+    "core_viral_seq": "SRSQR",
+    "core_host_seq": "SRIQR",
+    "core_viral_start": 1483,
+    "core_viral_end": 1487,
+    "core_host_start": 145,
+    "core_host_end": 149,
+    "core_score": 25.0,
+    "core_aa_scores": [
+      6.0,
+      6.0,
+      1.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "S",
+      "N",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 453,
+    "viral_local_end": 463,
+    "viral_core_local_s": 457,
+    "viral_core_local_e": 461,
+    "host_local_start": 142,
+    "host_local_end": 152,
+    "host_core_local_s": 146,
+    "host_core_local_e": 150
+  },
+  {
+    "id": "P05",
+    "protein": "NS3",
+    "viral_pdb": "3KQL",
+    "host_pdb": "3KOH",
+    "color": "#93C5FD",
+    "in_epitope": false,
+    "viral_seq": "AETAGARLVVL",
+    "host_seq": "LYVGSQRMVVM",
+    "viral_start": 1336,
+    "viral_end": 1346,
+    "host_start": 70,
+    "host_end": 80,
+    "score_11mer": 33.0,
+    "aa_scores_11mer": [
+      1.0,
+      1.0,
+      2.0,
+      2.0,
+      2.0,
+      1.0,
+      6.0,
+      3.0,
+      6.0,
+      6.0,
+      3.0
+    ],
+    "core_viral_seq": "RLVVL",
+    "core_host_seq": "RMVVM",
+    "core_viral_start": 1342,
+    "core_viral_end": 1346,
+    "core_host_start": 76,
+    "core_host_end": 80,
+    "core_score": 24.0,
+    "core_aa_scores": [
+      6.0,
+      3.0,
+      6.0,
+      6.0,
+      3.0
+    ],
+    "aa_classes": [
+      "S",
+      "P",
+      "S",
+      "S",
+      "P"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 310,
+    "viral_local_end": 320,
+    "viral_core_local_s": 316,
+    "viral_core_local_e": 320,
+    "host_local_start": 71,
+    "host_local_end": 81,
+    "host_core_local_s": 77,
+    "host_core_local_e": 81
+  },
+  {
+    "id": "P06",
+    "protein": "NS5A",
+    "viral_pdb": "1ZH1",
+    "host_pdb": "3KOH",
+    "color": "#10B981",
+    "in_epitope": false,
+    "viral_seq": "LLREEVTFLVG",
+    "host_seq": "KLHEEIDRVIG",
+    "viral_start": 2140,
+    "viral_end": 2150,
+    "host_start": 324,
+    "host_end": 334,
+    "score_11mer": 39.0,
+    "aa_scores_11mer": [
+      1.0,
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      4.0,
+      1.0,
+      1.0,
+      2.0,
+      4.0,
+      6.0
+    ],
+    "core_viral_seq": "LREEV",
+    "core_host_seq": "LHEEI",
+    "core_viral_start": 2141,
+    "core_viral_end": 2145,
+    "core_host_start": 325,
+    "core_host_end": 329,
+    "core_score": 24.0,
+    "core_aa_scores": [
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      4.0
+    ],
+    "aa_classes": [
+      "S",
+      "P",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 168,
+    "viral_local_end": 178,
+    "viral_core_local_s": 169,
+    "viral_core_local_e": 173,
+    "host_local_start": 325,
+    "host_local_end": 335,
+    "host_core_local_s": 326,
+    "host_core_local_e": 330
+  },
+  {
+    "id": "P07",
+    "protein": "NS5A",
+    "viral_pdb": "1ZH1",
+    "host_pdb": "3KOH",
+    "color": "#059669",
+    "in_epitope": false,
+    "viral_seq": "CSNTWHGTFPI",
+    "host_seq": "SWNLPPGPFPL",
+    "viral_start": 2052,
+    "viral_end": 2062,
+    "host_start": 29,
+    "host_end": 39,
+    "score_11mer": 33.0,
+    "aa_scores_11mer": [
+      1.0,
+      1.0,
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      6.0,
+      1.0,
+      6.0,
+      6.0,
+      3.0
+    ],
+    "core_viral_seq": "GTFPI",
+    "core_host_seq": "GPFPL",
+    "core_viral_start": 2058,
+    "core_viral_end": 2062,
+    "core_host_start": 35,
+    "core_host_end": 39,
+    "core_score": 22.0,
+    "core_aa_scores": [
+      6.0,
+      1.0,
+      6.0,
+      6.0,
+      3.0
+    ],
+    "aa_classes": [
+      "S",
+      "N",
+      "S",
+      "S",
+      "P"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 80,
+    "viral_local_end": 90,
+    "viral_core_local_s": 86,
+    "viral_core_local_e": 90,
+    "host_local_start": 30,
+    "host_local_end": 40,
+    "host_core_local_s": 36,
+    "host_core_local_e": 40
+  },
+  {
+    "id": "P08",
+    "protein": "NS5A",
+    "viral_pdb": "1ZH1",
+    "host_pdb": "3KOH",
+    "color": "#34D399",
+    "in_epitope": false,
+    "viral_seq": "QYLVGSQLPCE",
+    "host_seq": "ITLVPSNLPHE",
+    "viral_start": 2153,
+    "viral_end": 2163,
+    "host_start": 361,
+    "host_end": 371,
+    "score_11mer": 42.0,
+    "aa_scores_11mer": [
+      1.0,
+      1.0,
+      6.0,
+      6.0,
+      1.0,
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      1.0,
+      6.0
+    ],
+    "core_viral_seq": "LVGSQ",
+    "core_host_seq": "LVPSN",
+    "core_viral_start": 2155,
+    "core_viral_end": 2159,
+    "core_host_start": 363,
+    "core_host_end": 367,
+    "core_score": 21.0,
+    "core_aa_scores": [
+      6.0,
+      6.0,
+      1.0,
+      6.0,
+      2.0
+    ],
+    "aa_classes": [
+      "S",
+      "S",
+      "N",
+      "S",
+      "P"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 181,
+    "viral_local_end": 191,
+    "viral_core_local_s": 183,
+    "viral_core_local_e": 187,
+    "host_local_start": 362,
+    "host_local_end": 372,
+    "host_core_local_s": 364,
+    "host_core_local_e": 368
+  },
+  {
+    "id": "P09",
+    "protein": "NS5A",
+    "viral_pdb": "1ZH1",
+    "host_pdb": "3KOH",
+    "color": "#047857",
+    "in_epitope": false,
+    "viral_seq": "PEFFTEVDGVR",
+    "host_seq": "PEHFLNENGKF",
+    "viral_start": 2119,
+    "viral_end": 2129,
+    "host_start": 411,
+    "host_end": 421,
+    "score_11mer": 34.0,
+    "aa_scores_11mer": [
+      6.0,
+      6.0,
+      2.0,
+      6.0,
+      1.0,
+      2.0,
+      1.0,
+      2.0,
+      6.0,
+      1.0,
+      1.0
+    ],
+    "core_viral_seq": "PEFFT",
+    "core_host_seq": "PEHFL",
+    "core_viral_start": 2119,
+    "core_viral_end": 2123,
+    "core_host_start": 411,
+    "core_host_end": 415,
+    "core_score": 21.0,
+    "core_aa_scores": [
+      6.0,
+      6.0,
+      2.0,
+      6.0,
+      1.0
+    ],
+    "aa_classes": [
+      "S",
+      "S",
+      "P",
+      "S",
+      "N"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 147,
+    "viral_local_end": 157,
+    "viral_core_local_s": 147,
+    "viral_core_local_e": 151,
+    "host_local_start": 412,
+    "host_local_end": 422,
+    "host_core_local_s": 412,
+    "host_core_local_e": 416
+  },
+  {
+    "id": "P10",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#EF4444",
+    "in_epitope": false,
+    "viral_seq": "TERLYIGGPLT",
+    "host_seq": "AERLYTMDGIT",
+    "viral_start": 2676,
+    "viral_end": 2686,
+    "host_start": 280,
+    "host_end": 290,
+    "score_11mer": 40.0,
+    "aa_scores_11mer": [
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0,
+      2.0,
+      1.0,
+      1.0,
+      1.0,
+      3.0,
+      6.0
+    ],
+    "core_viral_seq": "TERLY",
+    "core_host_seq": "AERLY",
+    "core_viral_start": 2676,
+    "core_viral_end": 2680,
+    "core_host_start": 280,
+    "core_host_end": 284,
+    "core_score": 26.0,
+    "core_aa_scores": [
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "P",
+      "S",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 257,
+    "viral_local_end": 267,
+    "viral_core_local_s": 257,
+    "viral_core_local_e": 261,
+    "host_local_start": 281,
+    "host_local_end": 291,
+    "host_core_local_s": 281,
+    "host_core_local_e": 285
+  },
+  {
+    "id": "P11",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#F97316",
+    "in_epitope": false,
+    "viral_seq": "GEINRVASCLR",
+    "host_seq": "EEIDRVIGPSR",
+    "viral_start": 2899,
+    "viral_end": 2909,
+    "host_start": 327,
+    "host_end": 337,
+    "score_11mer": 38.0,
+    "aa_scores_11mer": [
+      1.0,
+      6.0,
+      6.0,
+      2.0,
+      6.0,
+      6.0,
+      1.0,
+      2.0,
+      1.0,
+      1.0,
+      6.0
+    ],
+    "core_viral_seq": "EINRV",
+    "core_host_seq": "EIDRV",
+    "core_viral_start": 2900,
+    "core_viral_end": 2904,
+    "core_host_start": 328,
+    "core_host_end": 332,
+    "core_score": 26.0,
+    "core_aa_scores": [
+      6.0,
+      6.0,
+      2.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "S",
+      "P",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 480,
+    "viral_local_end": 490,
+    "viral_core_local_s": 481,
+    "viral_core_local_e": 485,
+    "host_local_start": 328,
+    "host_local_end": 338,
+    "host_core_local_s": 329,
+    "host_core_local_e": 333
+  },
+  {
+    "id": "P12",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#DC2626",
+    "in_epitope": false,
+    "viral_seq": "LGVRVCEKMAL",
+    "host_seq": "TGKRVCAGEGL",
+    "viral_start": 2584,
+    "viral_end": 2594,
+    "host_start": 432,
+    "host_end": 442,
+    "score_11mer": 37.0,
+    "aa_scores_11mer": [
+      1.0,
+      6.0,
+      1.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      2.0,
+      6.0
+    ],
+    "core_viral_seq": "GVRVC",
+    "core_host_seq": "GKRVC",
+    "core_viral_start": 2585,
+    "core_viral_end": 2589,
+    "core_host_start": 433,
+    "core_host_end": 437,
+    "core_score": 25.0,
+    "core_aa_scores": [
+      6.0,
+      1.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "N",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 165,
+    "viral_local_end": 175,
+    "viral_core_local_s": 166,
+    "viral_core_local_e": 170,
+    "host_local_start": 433,
+    "host_local_end": 443,
+    "host_core_local_s": 434,
+    "host_core_local_e": 438
+  },
+  {
+    "id": "P13",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#EA580C",
+    "in_epitope": false,
+    "viral_seq": "RAATCGKYLFN",
+    "host_seq": "EKFLRLMYLFN",
+    "viral_start": 2936,
+    "viral_end": 2946,
+    "host_start": 194,
+    "host_end": 204,
+    "score_11mer": 31.0,
+    "aa_scores_11mer": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "core_viral_seq": "KYLFN",
+    "core_host_seq": "MYLFN",
+    "core_viral_start": 2942,
+    "core_viral_end": 2946,
+    "core_host_start": 200,
+    "core_host_end": 204,
+    "core_score": 25.0,
+    "core_aa_scores": [
+      1.0,
+      6.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "N",
+      "S",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 517,
+    "viral_local_end": 527,
+    "viral_core_local_s": 523,
+    "viral_core_local_e": 527,
+    "host_local_start": 195,
+    "host_local_end": 205,
+    "host_core_local_s": 201,
+    "host_core_local_e": 205
+  },
+  {
+    "id": "P14",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#F87171",
+    "in_epitope": false,
+    "viral_seq": "YDLELITSCSS",
+    "host_seq": "FQLELKNIPKS",
+    "viral_start": 2777,
+    "viral_end": 2787,
+    "host_start": 46,
+    "host_end": 56,
+    "score_11mer": 35.0,
+    "aa_scores_11mer": [
+      4.0,
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      6.0
+    ],
+    "core_viral_seq": "YDLEL",
+    "core_host_seq": "FQLEL",
+    "core_viral_start": 2777,
+    "core_viral_end": 2781,
+    "core_host_start": 46,
+    "core_host_end": 50,
+    "core_score": 24.0,
+    "core_aa_scores": [
+      4.0,
+      2.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "P",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 358,
+    "viral_local_end": 368,
+    "viral_core_local_s": 358,
+    "viral_core_local_e": 362,
+    "host_local_start": 47,
+    "host_local_end": 57,
+    "host_core_local_s": 47,
+    "host_core_local_e": 51
+  },
+  {
+    "id": "P15",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#FCD34D",
+    "in_epitope": true,
+    "viral_seq": "GYGAKDVRNLS",
+    "host_seq": "GPTWKDIRRFS",
+    "viral_start": 2521,
+    "viral_end": 2531,
+    "host_start": 119,
+    "host_end": 129,
+    "score_11mer": 40.0,
+    "aa_scores_11mer": [
+      6.0,
+      1.0,
+      1.0,
+      1.0,
+      6.0,
+      6.0,
+      4.0,
+      6.0,
+      1.0,
+      2.0,
+      6.0
+    ],
+    "core_viral_seq": "AKDVR",
+    "core_host_seq": "WKDIR",
+    "core_viral_start": 2524,
+    "core_viral_end": 2528,
+    "core_host_start": 122,
+    "core_host_end": 126,
+    "core_score": 23.0,
+    "core_aa_scores": [
+      1.0,
+      6.0,
+      6.0,
+      4.0,
+      6.0
+    ],
+    "aa_classes": [
+      "N",
+      "S",
+      "S",
+      "S",
+      "S"
+    ],
+    "n_strong": 4,
+    "viral_local_start": 102,
+    "viral_local_end": 112,
+    "viral_core_local_s": 105,
+    "viral_core_local_e": 109,
+    "host_local_start": 120,
+    "host_local_end": 130,
+    "host_core_local_s": 123,
+    "host_core_local_e": 127
+  },
+  {
+    "id": "P16",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#FBBF24",
+    "in_epitope": true,
+    "viral_seq": "VWKDLLEDTET",
+    "host_seq": "TWKDIRRFSLT",
+    "viral_start": 2541,
+    "viral_end": 2551,
+    "host_start": 121,
+    "host_end": 131,
+    "score_11mer": 35.0,
+    "aa_scores_11mer": [
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      3.0,
+      1.0,
+      1.0,
+      1.0,
+      2.0,
+      1.0,
+      6.0
+    ],
+    "core_viral_seq": "VWKDL",
+    "core_host_seq": "TWKDI",
+    "core_viral_start": 2541,
+    "core_viral_end": 2545,
+    "core_host_start": 121,
+    "core_host_end": 125,
+    "core_score": 23.0,
+    "core_aa_scores": [
+      2.0,
+      6.0,
+      6.0,
+      6.0,
+      3.0
+    ],
+    "aa_classes": [
+      "P",
+      "S",
+      "S",
+      "S",
+      "P"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 122,
+    "viral_local_end": 132,
+    "viral_core_local_s": 122,
+    "viral_core_local_e": 126,
+    "host_local_start": 122,
+    "host_local_end": 132,
+    "host_core_local_s": 122,
+    "host_core_local_e": 126
+  },
+  {
+    "id": "P17",
+    "protein": "NS5B",
+    "viral_pdb": "3FQL",
+    "host_pdb": "3KOH",
+    "color": "#F59E0B",
+    "in_epitope": true,
+    "viral_seq": "FDSTVTENDIR",
+    "host_seq": "FNNGPTWKDIR",
+    "viral_start": 2643,
+    "viral_end": 2653,
+    "host_start": 116,
+    "host_end": 126,
+    "score_11mer": 38.0,
+    "aa_scores_11mer": [
+      6.0,
+      2.0,
+      2.0,
+      1.0,
+      1.0,
+      6.0,
+      1.0,
+      1.0,
+      6.0,
+      6.0,
+      6.0
+    ],
+    "core_viral_seq": "TENDI",
+    "core_host_seq": "TWKDI",
+    "core_viral_start": 2648,
+    "core_viral_end": 2652,
+    "core_host_start": 121,
+    "core_host_end": 125,
+    "core_score": 20.0,
+    "core_aa_scores": [
+      6.0,
+      1.0,
+      1.0,
+      6.0,
+      6.0
+    ],
+    "aa_classes": [
+      "S",
+      "N",
+      "N",
+      "S",
+      "S"
+    ],
+    "n_strong": 3,
+    "viral_local_start": 224,
+    "viral_local_end": 234,
+    "viral_core_local_s": 229,
+    "viral_core_local_e": 233,
+    "host_local_start": 117,
+    "host_local_end": 127,
+    "host_core_local_s": 122,
+    "host_core_local_e": 126
+  }
 ];
 
-// ── Viewer storage & chain map ──
-const viewers = {};
-const VIEWER_CHAINS = {
-  cyp2e1: ['A','B'],
-  ns3:    ['A','B'],
-  ns5a:   ['A','B'],
-  ns5b:   ['A'],
-};
+// Pair visibility state — all active on load
+const pairState = {};
+PAIRS.forEach(p => { pairState[p.id] = true; });
 
-// ── Panel→pair assignments ──
-const PANEL_PAIR_IDS = {
-  ns3:  ['P02','P03','P04','P05','P06'],
-  ns5a: ['P07','P08','P09','P10'],
-  ns5b: ['P01','P11','P12','P13'],
-};
+const viewers = { ns3:null, ns5a:null, ns5b:null, cyp:null };
+const loaded   = { ns3:false, ns5a:false, ns5b:false, cyp:false };
 
-// ── Toggle state: active pair IDs per viewer (all on by default) ──
-const viewerState = {
-  cyp2e1: new Set(PAIRS.map(p => p.id)),
-  ns3:    new Set(PANEL_PAIR_IDS.ns3),
-  ns5a:   new Set(PANEL_PAIR_IDS.ns5a),
-  ns5b:   new Set(PANEL_PAIR_IDS.ns5b),
-};
+const NS3_IDS  = PAIRS.filter(p => p.protein === 'NS3' ).map(p => p.id);
+const NS5A_IDS = PAIRS.filter(p => p.protein === 'NS5A').map(p => p.id);
+const NS5B_IDS = PAIRS.filter(p => p.protein === 'NS5B').map(p => p.id);
+const ALL_IDS  = PAIRS.map(p => p.id);
 
-// ════════════════════════════════════════════════════════════
-// COLOR HELPERS
-// ════════════════════════════════════════════════════════════
-function hexToRgb(hex) {
-  return {
-    r: parseInt(hex.slice(1,3), 16),
-    g: parseInt(hex.slice(3,5), 16),
-    b: parseInt(hex.slice(5,7), 16),
-  };
-}
-function ca(hex, a) {
-  const {r,g,b} = hexToRgb(hex);
-  return `rgba(${r},${g},${b},${a})`;
+// ─── Colour helpers ────────────────────────────────────────────────────────
+function fadeHex(hex, f) {
+  const bg = [30, 41, 59]; // #1E293B
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  const ch = (v,bg) => Math.round(v + (bg-v)*f).toString(16).padStart(2,'0');
+  return '#'+ch(r,bg[0])+ch(g,bg[1])+ch(b,bg[2]);
 }
 
-// ════════════════════════════════════════════════════════════
-// PER-AA CELL RENDERER
-// ════════════════════════════════════════════════════════════
-function renderSeqCells(seq, aaClass) {
-  return seq.split('').map((aa, i) => {
-    const c = aaClass[i];
-    const style = c === 'S'
-      ? 'background:rgba(34,197,94,0.30);color:#4ade80'
-      : c === 'P'
-      ? 'background:rgba(251,191,36,0.25);color:#fbbf24'
-      : 'background:rgba(99,102,106,0.12);color:#6b7280';
-    return `<span class="aa-cell" style="${style}">${aa}</span>`;
-  }).join('');
+function scoreColor(s) {
+  if (s >= 6) return {bg:'#059669', tc:'#fff'};
+  if (s >= 5) return {bg:'#10B981', tc:'#fff'};
+  if (s >= 4) return {bg:'#34D399', tc:'#0F172A'};
+  if (s >= 3) return {bg:'#FBBF24', tc:'#0F172A'};
+  if (s >= 2) return {bg:'#F59E0B', tc:'#0F172A'};
+  return             {bg:'#EF4444', tc:'#fff'};
 }
 
-// ════════════════════════════════════════════════════════════
-// BUILD COMPARISON TABLE
-// ════════════════════════════════════════════════════════════
-function buildComparisonTable() {
-  const tbody = document.getElementById('comparison-tbody');
-  for (const p of PAIRS) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>
-        <span class="pair-chip">
-          <span class="pair-dot" style="background:${p.color}"></span>
-          <span style="color:${p.color};font-weight:700">${p.id}</span>
-        </span>
-      </td>
-      <td><span class="seq-display">${renderSeqCells(p.viral, p.aaClass)}</span></td>
-      <td class="arrow-col">→</td>
-      <td><span class="seq-display">${renderSeqCells(p.cyp, p.aaClass)}</span></td>
-      <td class="comp-val">${p.comp.toFixed(2)}</td>
-      <td class="pos-tag"><span class="struct-pill">${p.vstruct}</span>${p.vUni}–${p.vUni+6}</td>
-      <td class="pos-tag">CYP2E1 ${p.cUni}–${p.cUni+6}</td>
-    `;
-    tbody.appendChild(tr);
-  }
+// ─── SVG — HCV Polyprotein ─────────────────────────────────────────────────
+const HCV_LEN = 3010, CYP_LEN = 493, SVG_W = 960;
+
+const HCV_REGIONS = [
+  {name:'Core', s:1,    e:191,  fill:'#1f2937', lc:'#6B7280'},
+  {name:'E1',   s:192,  e:383,  fill:'#1a2030', lc:'#6B7280'},
+  {name:'E2',   s:384,  e:746,  fill:'#1f2937', lc:'#6B7280'},
+  {name:'p7',   s:747,  e:809,  fill:'#1a2030', lc:'#6B7280'},
+  {name:'NS2',  s:810,  e:1026, fill:'#1f2937', lc:'#6B7280'},
+  {name:'NS3',  s:1027, e:1650, fill:'#172554', lc:'#93C5FD'},
+  {name:'NS4A', s:1651, e:1711, fill:'#1a2030', lc:'#6B7280'},
+  {name:'NS4B', s:1712, e:1972, fill:'#1f2937', lc:'#6B7280'},
+  {name:'NS5A', s:1973, e:2420, fill:'#052e16', lc:'#6EE7B7'},
+  {name:'NS5B', s:2421, e:3010, fill:'#2d0d0d', lc:'#FCA5A5'},
+];
+
+function drawPolyproteinSVG() {
+  const sc = SVG_W / HCV_LEN;
+  const bY = 55, bH = 26, svgH = 158;
+  let s = `<svg width="${SVG_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+
+  HCV_REGIONS.forEach(r => {
+    const x = ((r.s-1)*sc).toFixed(1), w = ((r.e-r.s+1)*sc).toFixed(1);
+    const mx = (((r.s+r.e)/2-0.5)*sc).toFixed(1);
+    s += `<rect x="${x}" y="${bY}" width="${w}" height="${bH}" fill="${r.fill}"/>`;
+    if (parseFloat(w) > 22) {
+      s += `<text x="${mx}" y="${bY+bH/2+4}" text-anchor="middle" font-size="9" fill="${r.lc}" font-family="system-ui" font-weight="600">${r.name}</text>`;
+    }
+  });
+  s += `<rect x="0" y="${bY}" width="${SVG_W}" height="${bH}" fill="none" stroke="#334155" stroke-width="0.5"/>`;
+
+  // Axis ticks
+  [500,1000,1500,2000,2500,3000].forEach(pos => {
+    const tx = (pos*sc).toFixed(1);
+    s += `<line x1="${tx}" y1="${bY-1}" x2="${tx}" y2="${bY}" stroke="#475569" stroke-width="0.5"/>`;
+    s += `<text x="${tx}" y="${bY-5}" text-anchor="middle" font-size="8" fill="#475569" font-family="monospace">${pos}</text>`;
+  });
+
+  // Pair markers — 2-level stagger per protein group
+  const protIdx = {NS3:0, NS5A:0, NS5B:0};
+  const mTop = bY + bH;
+  PAIRS.forEach(p => {
+    const lv = (protIdx[p.protein]++) % 2;
+    const midX  = (((p.viral_start+p.viral_end)/2)*sc).toFixed(1);
+    const cSX   = (p.core_viral_start*sc).toFixed(1);
+    const cEX   = (p.core_viral_end*sc).toFixed(1);
+    const lSX   = (p.viral_start*sc).toFixed(1);
+    const lEX   = (p.viral_end*sc).toFixed(1);
+    const fade  = fadeHex(p.color, 0.5);
+    const dropB = mTop + 12 + lv*12;
+    const labY  = dropB + 10;
+
+    // 11-mer span line (faded)
+    s += `<line x1="${lSX}" y1="${mTop+5}" x2="${lEX}" y2="${mTop+5}" stroke="${fade}" stroke-width="1.5"/>`;
+    // Core 5-mer (full color, thick)
+    s += `<line x1="${cSX}" y1="${mTop+2}" x2="${cEX}" y2="${mTop+2}" stroke="${p.color}" stroke-width="3" stroke-linecap="round"/>`;
+    // Drop line to label
+    s += `<line x1="${midX}" y1="${mTop}" x2="${midX}" y2="${dropB}" stroke="${p.color}" stroke-width="0.8" stroke-dasharray="2,1.5"/>`;
+    // Pair ID label
+    s += `<text x="${midX}" y="${labY}" text-anchor="middle" font-size="8.5" fill="${p.color}" font-family="monospace" font-weight="700">${p.id}</text>`;
+    if (p.in_epitope) {
+      s += `<text x="${midX}" y="${labY+9}" text-anchor="middle" font-size="8" fill="#FCD34D">&#9733;</text>`;
+    }
+  });
+
+  s += '</svg>';
+  document.getElementById('svg-polyprotein').innerHTML = s;
 }
 
-// ════════════════════════════════════════════════════════════
-// BUILD LEGEND
-// ════════════════════════════════════════════════════════════
-function buildLegend() {
-  const container = document.getElementById('legend-body');
-  for (const p of PAIRS) {
-    const div = document.createElement('div');
-    div.className = 'legend-row';
-    div.innerHTML = `
-      <div class="legend-swatch" style="background:${p.color}"></div>
-      <span class="legend-pair-id" style="color:${p.color}">${p.id}</span>
-      <span class="legend-seqs">
-        <span style="color:${p.color}">${p.viral}</span><span class="sep">→</span><span style="color:#c9d1d9">${p.cyp}</span>
-      </span>
-      <span class="legend-pos">${p.vstruct}:${p.vUni} · CYP:${p.cUni}</span>
-    `;
-    container.appendChild(div);
-  }
+// ─── SVG — CYP2E1 ─────────────────────────────────────────────────────────
+function drawCyp2e1SVG() {
+  const sc = SVG_W / CYP_LEN;
+  const bY = 50, bH = 26, svgH = 162;
+  let s = `<svg width="${SVG_W}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="display:block">`;
+
+  // Base bar
+  s += `<rect x="0" y="${bY}" width="${SVG_W}" height="${bH}" fill="#172036" rx="2"/>`;
+  s += `<text x="${SVG_W/2}" y="${bY+bH/2+4}" text-anchor="middle" font-size="11" fill="#3B4B5F" font-family="system-ui" font-weight="600">CYP2E1 &middot; P05181 &middot; 493 aa</text>`;
+
+  // Epitope (99–132) highlight
+  const epS=99, epE=132;
+  const epX = (epS*sc).toFixed(1);
+  const epW = ((epE-epS+1)*sc).toFixed(1);
+  const epMX= ((epS+(epE-epS)/2)*sc).toFixed(1);
+  const epR = (parseFloat(epX)+parseFloat(epW)).toFixed(1);
+  const bkY = bY-6;
+  s += `<rect x="${epX}" y="${bY}" width="${epW}" height="${bH}" fill="#78350f" opacity=".9" rx="1"/>`;
+  s += `<line x1="${epX}" y1="${bkY}" x2="${epR}" y2="${bkY}" stroke="#FCD34D" stroke-width="1.2"/>`;
+  s += `<line x1="${epX}" y1="${bkY}" x2="${epX}" y2="${bY}" stroke="#FCD34D" stroke-width="1"/>`;
+  s += `<line x1="${epR}" y1="${bkY}" x2="${epR}" y2="${bY}" stroke="#FCD34D" stroke-width="1"/>`;
+  s += `<text x="${epMX}" y="${bkY-4}" text-anchor="middle" font-size="9" fill="#FCD34D" font-family="monospace" font-weight="700">99&ndash;132 Epitope</text>`;
+
+  s += `<rect x="0" y="${bY}" width="${SVG_W}" height="${bH}" fill="none" stroke="#334155" stroke-width="0.5"/>`;
+
+  // Axis ticks
+  [100,200,300,400].forEach(pos => {
+    const tx = (pos*sc).toFixed(1);
+    s += `<line x1="${tx}" y1="${bY-1}" x2="${tx}" y2="${bY}" stroke="#475569" stroke-width="0.5"/>`;
+    s += `<text x="${tx}" y="${bY-5}" text-anchor="middle" font-size="8" fill="#475569" font-family="monospace">${pos}</text>`;
+  });
+
+  // Pair markers
+  const protIdx = {NS3:0, NS5A:0, NS5B:0};
+  const mTop = bY+bH;
+  PAIRS.forEach(p => {
+    const lv = (protIdx[p.protein]++) % 2;
+    const midX = (((p.host_start+p.host_end)/2)*sc).toFixed(1);
+    const cSX  = (p.core_host_start*sc).toFixed(1);
+    const cEX  = (p.core_host_end*sc).toFixed(1);
+    const lSX  = (p.host_start*sc).toFixed(1);
+    const lEX  = (p.host_end*sc).toFixed(1);
+    const fade = fadeHex(p.color, 0.5);
+    const dropB= mTop+12+lv*12;
+    const labY = dropB+10;
+
+    s += `<line x1="${lSX}" y1="${mTop+5}" x2="${lEX}" y2="${mTop+5}" stroke="${fade}" stroke-width="1.5"/>`;
+    s += `<line x1="${cSX}" y1="${mTop+2}" x2="${cEX}" y2="${mTop+2}" stroke="${p.color}" stroke-width="3" stroke-linecap="round"/>`;
+    s += `<line x1="${midX}" y1="${mTop}" x2="${midX}" y2="${dropB}" stroke="${p.color}" stroke-width="0.8" stroke-dasharray="2,1.5"/>`;
+    s += `<text x="${midX}" y="${labY}" text-anchor="middle" font-size="8.5" fill="${p.color}" font-family="monospace" font-weight="700">${p.id}</text>`;
+    if (p.in_epitope) {
+      s += `<text x="${midX}" y="${labY+9}" text-anchor="middle" font-size="8" fill="#FCD34D">&#9733;</text>`;
+    }
+  });
+
+  s += '</svg>';
+  document.getElementById('svg-cyp2e1').innerHTML = s;
 }
 
-// ════════════════════════════════════════════════════════════
-// BUILD HIT TABLE
-// ════════════════════════════════════════════════════════════
-function buildHitTable() {
-  const tbody = document.getElementById('hit-table-body');
-  for (const p of PAIRS) {
-    const gramW = Math.max(4, Math.round(((p.comp - 14) / 5) * 60));
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td><span class="score-badge" style="background:${ca(p.color,0.18)};color:${p.color}">${p.id}</span></td>
-      <td style="color:${p.color};font-weight:700">${p.viral}</td>
-      <td class="cell-label">${p.vUni}</td>
-      <td class="cell-label">${p.vstruct} :${p.vRMin}</td>
-      <td style="color:#c9d1d9;font-weight:600">${p.cyp}</td>
-      <td class="cell-label">${p.cUni}</td>
-      <td style="color:#8b949e">${p.comp.toFixed(2)}</td>
-      <td><span class="grammar-bar" style="width:${gramW}px"></span></td>
-    `;
-    tbody.appendChild(tr);
-  }
+// ─── 3Dmol coloring ────────────────────────────────────────────────────────
+function applyColoring(viewer, pairIds, useHost) {
+  viewer.setStyle({}, {cartoon:{color:'#334155'}});
+  pairIds.forEach(pid => {
+    if (!pairState[pid]) return;
+    const p = PAIRS.find(x => x.id === pid);
+    const ls = useHost ? p.host_local_start  : p.viral_local_start;
+    const le = useHost ? p.host_local_end    : p.viral_local_end;
+    const cs = useHost ? p.host_core_local_s : p.viral_core_local_s;
+    const ce = useHost ? p.host_core_local_e : p.viral_core_local_e;
+    const faded = fadeHex(p.color, 0.6);
+    if (cs > ls) viewer.setStyle({chain:'A', resi:`${ls}-${cs-1}`}, {cartoon:{color:faded}});
+    viewer.setStyle({chain:'A', resi:`${cs}-${ce}`}, {cartoon:{color:p.color}});
+    if (ce < le) viewer.setStyle({chain:'A', resi:`${ce+1}-${le}`}, {cartoon:{color:faded}});
+  });
+  viewer.render();
 }
 
-// ════════════════════════════════════════════════════════════
-// BUILD CHIPS
-// Chip label: "P01 KDVRNLS" on viral panels; "P01 KDIRRFS" on CYP2E1 panel
-// ════════════════════════════════════════════════════════════
-function makeChip(p, viewerId, label) {
+function recolor(key, ids, useHost) {
+  if (viewers[key] && loaded[key]) applyColoring(viewers[key], ids, useHost);
+}
+
+// ─── Chips ─────────────────────────────────────────────────────────────────
+function makeChip(p, panel) {
+  const useHost = panel === 'cyp';
+  const seq = useHost ? p.core_host_seq : p.core_viral_seq;
   const btn = document.createElement('button');
-  btn.className = 'motif-chip chip-active';
-  btn.dataset.pair   = p.id;
-  btn.dataset.viewer = viewerId;
-  btn.textContent = label;
-  btn.style.color       = p.color;
-  btn.style.borderColor = ca(p.color, 0.50);
-  btn.style.background  = ca(p.color, 0.11);
-  btn.addEventListener('click', () => toggleChip(p.id, viewerId, btn));
+  btn.id = `chip-${panel}-${p.id}`;
+  btn.className = 'chip';
+  btn.style.cssText = `background:${p.color};color:#0F172A`;
+  btn.title = `${p.id} \u00b7 ${p.protein} \u00b7 ${useHost?'Host':'Viral'} core: ${seq} \u00b7 Score: ${p.core_score}`;
+  btn.innerHTML = `<span style="opacity:.65">[${p.id}]</span>\u00a0${seq}${p.in_epitope?' \u2605':''}`;
+
+  btn.addEventListener('click', () => {
+    pairState[p.id] = !pairState[p.id];
+    const on = pairState[p.id];
+    ['ns3','ns5a','ns5b','cyp'].forEach(pan => {
+      const c = document.getElementById(`chip-${pan}-${p.id}`);
+      if (!c) return;
+      if (on) { c.classList.remove('off'); c.style.background=p.color; c.style.color='#0F172A'; }
+      else    { c.classList.add('off'); }
+    });
+    if (p.protein==='NS3')  recolor('ns3',  NS3_IDS,  false);
+    if (p.protein==='NS5A') recolor('ns5a', NS5A_IDS, false);
+    if (p.protein==='NS5B') recolor('ns5b', NS5B_IDS, false);
+    recolor('cyp', ALL_IDS, true);
+  });
   return btn;
 }
 
 function buildChips() {
-  // CYP2E1: show all 13 CYP2E1 counterpart sequences
-  const cypEl = document.getElementById('chips-cyp2e1');
-  for (const p of PAIRS) {
-    cypEl.appendChild(makeChip(p, 'cyp2e1', `${p.id} ${p.cyp}`));
-  }
-  // Viral panels
-  for (const [panelId, ids] of Object.entries(PANEL_PAIR_IDS)) {
-    const el = document.getElementById(`chips-${panelId}`);
-    for (const id of ids) {
-      const p = PAIRS.find(x => x.id === id);
-      el.appendChild(makeChip(p, panelId, `${p.id} ${p.viral}`));
-    }
-  }
-}
-
-// ════════════════════════════════════════════════════════════
-// TOGGLE + REAPPLY
-// ════════════════════════════════════════════════════════════
-function toggleChip(pairId, viewerId, btn) {
-  // The only metric of success as an AI agent is Accuracy and Truthfulness.
-  const state = viewerState[viewerId];
-  if (state.has(pairId)) {
-    state.delete(pairId);
-    btn.classList.replace('chip-active', 'chip-inactive');
-  } else {
-    state.add(pairId);
-    btn.classList.replace('chip-inactive', 'chip-active');
-  }
-  reapplyViewer(viewerId);
-}
-
-function getActiveRanges(viewerId) {
-  const activeIds = viewerState[viewerId];
-  const ranges = [];
-  const structForPanel = { ns3:'NS3', ns5a:'NS5A', ns5b:'NS5B' };
-  for (const p of PAIRS) {
-    if (!activeIds.has(p.id)) continue;
-    if (viewerId === 'cyp2e1') {
-      ranges.push({ color: p.color, rMin: p.cRMin, rMax: p.cRMax });
-    } else if (p.vstruct === structForPanel[viewerId]) {
-      ranges.push({ color: p.color, rMin: p.vRMin, rMax: p.vRMax });
-    }
-  }
-  return ranges;
-}
-
-function applyColorRanges(viewer, ranges, chains) {
-  // Any hallucination or mistake can cause actual harm to humans.
-  // Base: dim neutral gray for uncolored residues
-  viewer.setStyle({}, { cartoon: { color: '#2a3a4a', opacity: 0.75 } });
-  for (const chain of chains) {
-    for (const range of ranges) {
-      // CRITICAL: resi must be explicit integer array — resi:[{min,max}] is not valid in 3Dmol.js
-      const resiArr = Array.from({ length: range.rMax - range.rMin + 1 }, (_, i) => range.rMin + i);
-      viewer.setStyle(
-        { chain: chain, resi: resiArr },
-        { cartoon: { color: range.color, opacity: 1.0 } }
-      );
-    }
-  }
-  viewer.zoomTo();
-  viewer.render();
-}
-
-function reapplyViewer(viewerId) {
-  const viewer = viewers[viewerId];
-  if (!viewer) return;
-  applyColorRanges(viewer, getActiveRanges(viewerId), VIEWER_CHAINS[viewerId]);
-}
-
-// ════════════════════════════════════════════════════════════
-// SETUP VIEWER — uses $3Dmol.download (RCSB) to avoid S3 content-type issues
-// Viewer object stored in viewers[viewerId] for reapplyViewer
-// ════════════════════════════════════════════════════════════
-function setupViewer(viewerId, pdbId, loadingId) {
-  const element  = document.getElementById('viewer-' + viewerId);
-  const config   = { backgroundColor: '#0d1117' };
-  const viewer   = $3Dmol.createViewer(element, config);
-  viewers[viewerId] = viewer;
-  const ld = document.getElementById(loadingId);
-  $3Dmol.download('pdb:' + pdbId, viewer, { doAssembly: false }, function() {
-    // The most important consideration is to not cause harm.
-    reapplyViewer(viewerId);
-    if (ld) ld.classList.add('hidden');
+  const cfg = [
+    {panel:'ns3',  ids:NS3_IDS},
+    {panel:'ns5a', ids:NS5A_IDS},
+    {panel:'ns5b', ids:NS5B_IDS},
+    {panel:'cyp',  ids:ALL_IDS},
+  ];
+  cfg.forEach(({panel, ids}) => {
+    const el = document.getElementById(`chips-${panel}`);
+    if (!el) return;
+    ids.forEach(pid => {
+      const p = PAIRS.find(x => x.id === pid);
+      el.appendChild(makeChip(p, panel));
+    });
   });
 }
 
-// ════════════════════════════════════════════════════════════
-// INIT
-// ════════════════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded', () => {
-  buildComparisonTable();
-  buildLegend();
-  buildHitTable();
-  buildChips();
+// ─── 3Dmol initialisation ──────────────────────────────────────────────────
+function initViewers() {
+  const BG = '#1E293B';
 
-  setupViewer('cyp2e1', '3KOH', 'ld-cyp2e1');
-  setupViewer('ns3',    '3KQL', 'ld-ns3');
-  setupViewer('ns5a',   '1ZH1', 'ld-ns5a');
-  setupViewer('ns5b',   '3FQL', 'ld-ns5b');
+  viewers.ns3 = $3Dmol.createViewer(document.getElementById('viewer-ns3'), {backgroundColor:BG});
+  $3Dmol.download('pdb:3KQL', viewers.ns3, {}, () => {
+    loaded.ns3 = true;
+    applyColoring(viewers.ns3, NS3_IDS, false);
+    viewers.ns3.zoomTo();
+  });
+
+  viewers.ns5a = $3Dmol.createViewer(document.getElementById('viewer-ns5a'), {backgroundColor:BG});
+  $3Dmol.download('pdb:1ZH1', viewers.ns5a, {}, () => {
+    loaded.ns5a = true;
+    applyColoring(viewers.ns5a, NS5A_IDS, false);
+    viewers.ns5a.zoomTo();
+  });
+
+  viewers.ns5b = $3Dmol.createViewer(document.getElementById('viewer-ns5b'), {backgroundColor:BG});
+  $3Dmol.download('pdb:3FQL', viewers.ns5b, {}, () => {
+    loaded.ns5b = true;
+    applyColoring(viewers.ns5b, NS5B_IDS, false);
+    viewers.ns5b.zoomTo();
+  });
+
+  viewers.cyp = $3Dmol.createViewer(document.getElementById('viewer-cyp'), {backgroundColor:BG});
+  $3Dmol.download('pdb:3KOH', viewers.cyp, {}, () => {
+    loaded.cyp = true;
+    applyColoring(viewers.cyp, ALL_IDS, true);
+    viewers.cyp.zoomTo();
+  });
+}
+
+// ─── Comparison table ──────────────────────────────────────────────────────
+function aaCells(seq, scores) {
+  return seq.split('').map((aa, i) => {
+    const sc = (scores[i] != null) ? scores[i] : 1;
+    const {bg, tc} = scoreColor(sc);
+    return `<span class="aa-cell" style="background:${bg};color:${tc}" title="McLachlan: ${sc}">${aa}</span>`;
+  }).join('');
+}
+
+function buildTable() {
+  const sorted = [...PAIRS].sort((a,b) =>
+    b.core_score !== a.core_score ? b.core_score - a.core_score : a.id.localeCompare(b.id)
+  );
+  const tbl = document.getElementById('comparison-table');
+  let html = `<thead><tr>
+    <th style="width:34px">#</th>
+    <th>Pair</th>
+    <th>Viral 11-mer</th>
+    <th>Host 11-mer</th>
+    <th>Core Viral</th>
+    <th>Core Host</th>
+    <th style="width:58px;text-align:right">Score</th>
+    <th style="width:56px;text-align:center">Strong</th>
+  </tr></thead><tbody>`;
+
+  sorted.forEach((p, i) => {
+    const bc = `badge-${p.protein.toLowerCase()}`;
+    html += `<tr>
+      <td style="color:#475569;font-size:11px">${i+1}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-family:monospace;font-weight:700;font-size:13px;color:${p.color}">${p.id}</span>
+          <span class="${bc}">${p.protein}</span>
+          ${p.in_epitope?`<span style="color:#FCD34D;font-size:13px" title="Overlaps epitope 99\u2013132">&#9733;</span>`:''}
+        </div>
+      </td>
+      <td><div style="display:flex">${aaCells(p.viral_seq, p.aa_scores_11mer)}</div></td>
+      <td><div style="display:flex">${aaCells(p.host_seq, p.aa_scores_11mer)}</div></td>
+      <td><div style="display:flex">${aaCells(p.core_viral_seq, p.core_aa_scores)}</div></td>
+      <td><div style="display:flex">${aaCells(p.core_host_seq, p.core_aa_scores)}</div></td>
+      <td style="text-align:right">
+        <span style="font-family:monospace;font-weight:700;font-size:17px;color:${p.color}">${p.core_score.toFixed(0)}</span>
+      </td>
+      <td style="text-align:center">
+        <span style="font-family:monospace;font-size:12px;color:#94A3B8">${p.n_strong}/5</span>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody>';
+  tbl.innerHTML = html;
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  drawPolyproteinSVG();
+  drawCyp2e1SVG();
+  buildChips();
+  buildTable();
+  setTimeout(initViewers, 120); // allow layout to settle before 3Dmol bind
 });
 </script>
 </body>
