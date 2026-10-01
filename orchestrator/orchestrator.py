@@ -114,6 +114,9 @@ class OrchestratorResult:
     phase2_enriched_pairs: List[Dict]  = field(default_factory=list)
     calibration_result:    Dict        = field(default_factory=dict)
 
+    # ── Phase 3 — TRUE super-epitope pairs (viral bridged pairs) ──────────────
+    super_epitope_pairs:   List[Dict]  = field(default_factory=list)
+
     # ── Meta ─────────────────────────────────────────────────────────────────
     timestamp:           str                = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -520,7 +523,7 @@ def _build_risk_summary(
         return {
             "top_architecture":        "NONE",
             "top_final_score":         0.0,
-            "n_super_epitope":         0,
+            "n_complete_sea":          0,
             "n_sandwiched":            0,
             "n_pairs_scored":          0,
             "host_is_cma_member":      False,
@@ -539,8 +542,8 @@ def _build_risk_summary(
         }
 
     top     = sea_results[0]
-    supers  = sum(1 for r in sea_results if r.is_super_epitope)
-    sands   = sum(1 for r in sea_results if r.is_sandwiched and not r.is_super_epitope)
+    supers  = sum(1 for r in sea_results if r.is_complete_sea)
+    sands   = sum(1 for r in sea_results if r.is_sandwiched and not r.is_complete_sea)
     top_arc = top.architecture_class.name if hasattr(top.architecture_class, "name") else str(top.architecture_class)
 
     host_cma_member   = host_cma is not None
@@ -567,7 +570,7 @@ def _build_risk_summary(
     return {
         "top_architecture":        top_arc,
         "top_final_score":         round(score, 4),
-        "n_super_epitope":         supers,
+        "n_complete_sea":          supers,
         "n_sandwiched":            sands,
         "n_pairs_scored":          len(sea_results),
         "host_is_cma_member":      host_cma_member,
@@ -637,7 +640,7 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a(f"| Overall Risk | **{rs.get('overall_risk', 'N/A')}** |")
     a(f"| Top Architecture | {rs.get('top_architecture', 'N/A')} |")
     a(f"| Top Final Score | {rs.get('top_final_score', 0.0):.4f} |")
-    a(f"| Super-Epitope Hits | {rs.get('n_super_epitope', 0)} |")
+    a(f"| Complete-SEA Hits | {rs.get('n_complete_sea', 0)} |")
     a(f"| Sandwiched Hits | {rs.get('n_sandwiched', 0)} |")
     a(f"| Pairs Scored | {rs.get('n_pairs_scored', 0)} |")
     a(f"| Host CMA Member | {rs.get('host_is_cma_member', False)} ({rs.get('host_cma_category', 'N/A')}) |")
@@ -744,23 +747,35 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("")
 
     p2 = result.phase2_enriched_pairs
+    proximal_kferq_pairs = [p for p in p2 if p.get("proximal_kferq_motif")]
+    proximal_lir_pairs   = [p for p in p2 if p.get("proximal_lir_motif")]
+    proximal_both_pairs  = [p for p in p2 if p.get("proximal_kferq_motif") and p.get("proximal_lir_motif")]
     proximal_pairs = [p for p in p2 if p.get("proximal_deg_motif")]
+
+    a(f"**Proximity summary:** KFERQ-proximal={len(proximal_kferq_pairs)}  |  "
+      f"LIR-proximal={len(proximal_lir_pairs)}  |  "
+      f"Both KFERQ+LIR={len(proximal_both_pairs)}  |  "
+      f"T1-floored (both)={sum(1 for p in proximal_both_pairs if p['phase2_tier']=='T1')}")
+    a("")
+    a("*Tier floor rules: KFERQ+LIR both proximal → T1 floor; LIR-only → T2 floor; KFERQ-only → T2 floor.*")
+    a("")
     if proximal_pairs:
         proximal_sorted = sorted(proximal_pairs, key=lambda x: x["final_sea_score"], reverse=True)
-        a(f"**{len(proximal_sorted)} homologous pair(s) lie within 30 residues of a KFERQ-like motif.**")
-        a("")
-        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | V-KFdist | H-KFdist | Tier | Score | KE |")
-        a("|---|-----------|-------|----------|-------|----------|----------|------|-------|----|")
+        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | V-KFdist | H-KFdist | V-LIRdist | H-LIRdist | Tier | Phospho-Exp | Score | KE |")
+        a("|---|-----------|-------|----------|-------|----------|----------|-----------|-----------|------|-------------|-------|----|")
         for i, p in enumerate(proximal_sorted, 1):
             v_pos  = p["position1"] + 1
             h_pos  = p["position2"] + 1
             vkf    = str(p["viral_kferq_dist"]) if p["viral_kferq_dist"] is not None else "—"
             hkf    = str(p["host_kferq_dist"])  if p["host_kferq_dist"]  is not None else "—"
+            vlir   = str(p["viral_lir_dist"])   if p.get("viral_lir_dist") is not None else "—"
+            hlir   = str(p["host_lir_dist"])    if p.get("host_lir_dist")  is not None else "—"
+            pexp   = f"{p.get('phospho_exposure_score', 0.0):.3f}"
             ke     = "★" if p.get("overlaps_known_epitope") else "—"
             a(f"| {i} | `{p['seq1']}` | {v_pos} | `{p['seq2']}` | {h_pos} "
-              f"| {vkf} | {hkf} | {p['phase2_tier']} | {p['final_sea_score']:.4f} | {ke} |")
+              f"| {vkf} | {hkf} | {vlir} | {hlir} | {p['phase2_tier']} | {pexp} | {p['final_sea_score']:.4f} | {ke} |")
     else:
-        a("*No homologous pairs found within the KFERQ proximity threshold.*")
+        a("*No homologous pairs found within the KFERQ or LIR proximity threshold.*")
         a("*Interpretation: degradation motif co-localisation is absent at this threshold;*")
         a("*Phase 2b convergence scoring remains the primary ranking signal.*")
     a("")
@@ -869,19 +884,27 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     }
     top_n = result.sea_results[:20]
     if top_n:
-        a("| Rank | Viral Seq | Host Seq | Viral Pos | Host Pos | Architecture | P2 Tier | KE | Final Score |")
-        a("|------|-----------|----------|-----------|----------|-------------|---------|-----|-------------|")
+        # Build phospho_exposure lookup from phase2_pairs
+        _p2_pexp_lookup: Dict[tuple, float] = {
+            (p["position1"], p["position2"]): p.get("phospho_exposure_score", 0.0)
+            for p in result.phase2_enriched_pairs
+        }
+        a("| Rank | Viral Seq | Host Seq | V-Pos | H-Pos | Architecture | P2 Tier | Phospho-Exp | KE | Final Score |")
+        a("|------|-----------|----------|-------|-------|-------------|---------|-------------|-----|-------------|")
         for i, r in enumerate(top_n, 1):
-            arc  = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
-            tier = _p2_tier_lookup.get((r.position1, r.position2), "—")
-            ke   = "★" if _p2_ke_lookup.get((r.position1, r.position2), False) else "—"
-            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {arc} | {tier} | {ke} | {r.final_sea_score:.4f} |")
+            arc   = r.architecture_class.name if hasattr(r.architecture_class, "name") else str(r.architecture_class)
+            tier  = _p2_tier_lookup.get((r.position1, r.position2), "—")
+            ke    = "★" if _p2_ke_lookup.get((r.position1, r.position2), False) else "—"
+            pexp  = _p2_pexp_lookup.get((r.position1, r.position2), 0.0)
+            v_pos = r.position1 + 1
+            h_pos = r.position2 + 1
+            a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {v_pos} | {h_pos} | {arc} | {tier} | {pexp:.3f} | {ke} | {r.final_sea_score:.4f} |")
     else:
         a("*No SEA hits found.*")
     a("")
-    a("### Super-Epitope Details")
+    a("### Complete-SEA Details")
     a("")
-    super_hits = [r for r in result.sea_results if r.is_super_epitope]
+    super_hits = [r for r in result.sea_results if r.is_complete_sea]
     if super_hits:
         for i, r in enumerate(super_hits, 1):
             a(f"#### Super-Epitope #{i} — viral pos {r.position1} / host pos {r.position2}")
@@ -904,6 +927,74 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("---")
     a("")
 
+    # ── TRUE SUPER-EPITOPE PAIRS ─────────────────────────────────────────
+    a("### TRUE SUPER-EPITOPE Pairs")
+    a("")
+    a("*A TRUE SUPER-EPITOPE requires TWO viral hit fragments bridged by a T1 phospho-hinge.*")
+    a("*When the hinge is phosphorylated, both fragments are simultaneously exposed,*")
+    a("*acting as a combined large epitope that can be recognised by autoantibodies.*")
+    a("*Viral span ≤ 150 aa | Host span ≤ 150 aa | ≥1 T1 hinge position between viral fragments.*")
+    a("")
+    sep_list = result.super_epitope_pairs
+    if sep_list:
+        a(f"**{len(sep_list)} TRUE SUPER-EPITOPE pair(s) detected.**")
+        a("")
+        a("| # | Hit-A Rank | Hit-B Rank | Hit-A Viral | Hit-B Viral | Hit-A Host | Hit-B Host | V-Span | H-Span | Bridging T1 Hinges | A-Score | B-Score |")
+        a("|---|-----------|-----------|------------|------------|-----------|-----------|--------|--------|-------------------|---------|---------|")
+        for i, sp in enumerate(sep_list[:10], 1):
+            bridging_str = ",".join(str(p) for p in sp["bridging_t1_hinges"][:5])
+            a(f"| {i} | #{sp['hit_a_rank']} | #{sp['hit_b_rank']} "
+              f"| `{sp['hit_a_seq1']}` @{sp['hit_a_pos1']+1} "
+              f"| `{sp['hit_b_seq1']}` @{sp['hit_b_pos1']+1} "
+              f"| `{sp['hit_a_seq2']}` @{sp['hit_a_pos2']+1} "
+              f"| `{sp['hit_b_seq2']}` @{sp['hit_b_pos2']+1} "
+              f"| {sp['viral_span']} | {sp['host_span']} "
+              f"| {bridging_str} "
+              f"| {sp['hit_a_score']:.4f} | {sp['hit_b_score']:.4f} |")
+    else:
+        a("*No TRUE SUPER-EPITOPE pairs detected at this threshold (viral ≤ 150 aa, host ≤ 150 aa, T1-bridged).*")
+        a("*Interpretation: no two hit fragments are brought into proximity by a single T1 hinge event.*")
+    a("")
+    a("---")
+    a("")
+
+    # ── RANKING TALLY ────────────────────────────────────────────────────
+    a("### Ranking Tally — Known Epitope Sequences")
+    a("")
+    a("*Tracks current rank of sequences that overlap the known autoantibody epitope (★ KE annotation).*")
+    a("*Use this table across tuning iterations to monitor convergence toward placing known immunogenic*")
+    a("*sequences at the top of the prioritised list.*")
+    a("")
+    # Build a fresh position→rank lookup from sorted sea_results
+    _rank_lookup: Dict[tuple, int] = {
+        (r.position1, r.position2): r.rank
+        for r in result.sea_results
+    }
+    ke_tally = [
+        p for p in result.phase2_enriched_pairs
+        if p.get("overlaps_known_epitope")
+    ]
+    if ke_tally:
+        ke_tally_sorted = sorted(ke_tally, key=lambda p: _rank_lookup.get((p["position1"], p["position2"]), 9999))
+        a("| # | Viral Seq → Host Seq | V-Pos | H-Pos | Rank | Score | Phospho-Exp | KFERQ-Prox | LIR-Prox | P2 Tier |")
+        a("|---|---------------------|-------|-------|------|-------|-------------|-----------|---------|---------|")
+        for i, p in enumerate(ke_tally_sorted, 1):
+            cur_rank = _rank_lookup.get((p["position1"], p["position2"]), "?")
+            v_pos    = p["position1"] + 1
+            h_pos    = p["position2"] + 1
+            kf_flag  = "YES" if p.get("proximal_kferq_motif") else "—"
+            lir_flag = "YES" if p.get("proximal_lir_motif")   else "—"
+            pexp     = p.get("phospho_exposure_score", 0.0)
+            a(f"| {i} | `{p['seq1']}` → `{p['seq2']}` | {v_pos} | {h_pos} "
+              f"| **#{cur_rank}** | {p['final_sea_score']:.4f} | {pexp:.3f} "
+              f"| {kf_flag} | {lir_flag} | {p['phase2_tier']} |")
+    else:
+        a("*No sequences overlap a known autoantibody epitope — supply host_accession and")
+        a(" protein_knowledge_base.json to enable this tally.*")
+    a("")
+    a("---")
+    a("")
+
     # ════════════════════════════════════════════════════════════
     # PHASE 4 — 3D Structural Analysis  (Pending)
     # ════════════════════════════════════════════════════════════
@@ -917,11 +1008,11 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("unfolding of the intervening sequence.  Candidate pairs for Phase 4 review")
     a("are listed below.")
     a("")
-    a("### Candidate Hits for Phase 4 (SUPER_EPITOPE, score ≥ 10.0)")
+    a("### Candidate Hits for Phase 4 (COMPLETE_SEA, score ≥ 10.0)")
     a("")
     ph4_candidates = [
         r for r in result.sea_results
-        if r.is_super_epitope and r.final_sea_score >= 10.0
+        if r.is_complete_sea and r.final_sea_score >= 10.0
     ]
     if ph4_candidates:
         a("| # | Viral Seq | Host Seq | Viral Pos | Host Pos | Score |")
@@ -929,7 +1020,7 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         for i, r in enumerate(ph4_candidates, 1):
             a(f"| {i} | `{r.seq1}` | `{r.seq2}` | {r.position1} | {r.position2} | {r.final_sea_score:.4f} |")
     else:
-        a("*No candidates meeting threshold (SUPER_EPITOPE + score ≥ 10.0) found in this run.*")
+        a("*No candidates meeting threshold (COMPLETE_SEA + score ≥ 10.0) found in this run.*")
     a("")
     a("### Planned Methodology")
     a("")
@@ -954,17 +1045,17 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("")
     overall_risk = rs.get("overall_risk", "UNKNOWN")
     top_score    = rs.get("top_final_score", 0.0)
-    n_super      = rs.get("n_super_epitope", 0)
+    n_super      = rs.get("n_complete_sea", 0)
     n_pairs      = rs.get("n_pairs_scored", 0)
     n_ep_hits    = rs.get("n_epitope_proximity_hits", 0)
     top_arc      = rs.get("top_architecture", "N/A")
 
     a(f"1. **Risk level:** {overall_risk} — top SEA score {top_score:.4f} across {n_pairs} scored pairs.")
     if n_super > 0:
-        a(f"2. **Super-epitope architecture detected:** {n_super} hit(s) classified as SUPER_EPITOPE, "
-          f"indicating the viral sequence may scaffold a multi-component mimicry epitope.")
+        a(f"2. **Complete-SEA architecture detected:** {n_super} hit(s) classified as COMPLETE_SEA, "
+          f"indicating a single viral fragment is sandwiched by structural features AND flanked by CMA motifs.")
     else:
-        a("2. **No super-epitope architecture detected** in this scoring run.")
+        a("2. **No COMPLETE_SEA architecture detected** in this scoring run.")
     if n_ep_hits > 0:
         a(f"3. **Known epitope overlap (annotation):** {n_ep_hits} hit(s) whose host anchor "
           f"overlaps a mapped autoantibody epitope for `{result.host_accession}`. "
@@ -999,7 +1090,7 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     if overall_risk == "CRITICAL":
         a("The CRITICAL risk designation indicates the viral protein carries sequence motifs")
         a("capable of mimicking host epitopes at multiple positions, with structural features")
-        a("(SUPER_EPITOPE architecture, high jammer density) that suggest active immune evasion.")
+        a("(COMPLETE_SEA architecture, high jammer density) that suggest active immune evasion.")
         a("Priority action: Phase 4 structural validation of top super-epitope candidates.")
     elif overall_risk == "HIGH":
         a("HIGH risk: significant mimicry potential detected. Functional validation of top")
@@ -1061,8 +1152,8 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("")
 
     # ── Footer ────────────────────────────────────────────────────────────
-    a("> *Generated by SEA Orchestrator v5 — BiologicExplorer/Tools*  ")
-    a(f"> *Phases 1–3 complete | Phase 4 pending | Phase 6 visualization queued*")
+    a("> *Generated by SEA Orchestrator v6 — BiologicExplorer/Tools*  ")
+    a(f"> *Phases 1–3 complete (Phase 3 v2: phospho-exposure + TRUE SUPER-EPITOPE pairs + ranking tally) | Phase 4 pending | Phase 6 visualization queued*")
 
     return lines
 
@@ -1082,6 +1173,27 @@ def _min_dist(pos: int, elements: List[Any], seq_window: int = 7) -> Optional[in
         return None
     center = pos + seq_window // 2
     return min(abs(center - e.position) for e in elements)
+
+
+def _phospho_exposure_score(
+    sea_result: Any,
+    window:     int = 15,
+) -> float:
+    """
+    Convert SEAResult.phospho_t1_hinge_dist (computed by sea_module inside
+    its per-pair proximity window) to a 0-1 phospho-exposure score.
+
+    The orchestrator does NOT re-scan hinge positions — that work is owned by
+    sea_module.  This function is a thin normalisation layer only.
+
+    Score = max(0.0, 1.0 - dist / window), rounded to 4 dp.
+    Returns 0.0 when sea_module found no T1 hinge within its proximity window.
+    """
+    d = getattr(sea_result, "phospho_t1_hinge_dist", None)
+    if d is None:
+        return 0.0
+    return round(max(0.0, 1.0 - d / window), 4)
+
 
 
 def _compute_pair_degradation_convergence(
@@ -1181,8 +1293,10 @@ def _check_degradation_proximity(
     host_pos:         int,
     viral_kferq:      List[Dict],
     host_kferq:       List[Dict],
-    seq_window:       int = 7,
-    proximity_window: int = 30,
+    seq_window:       int        = 7,
+    proximity_window: int        = 30,
+    viral_lir:        List[Dict] = None,   # find_all_degradation_motifs() lir key
+    host_lir:         List[Dict] = None,
 ) -> Dict:
     """
     Phase 2a — KFERQ motif proximity check for a homologous pair.
@@ -1232,11 +1346,100 @@ def _check_degradation_proximity(
         (h_dist is not None and h_dist <= proximity_window)
     )
 
+    # ── LIR proximity ────────────────────────────────────────────────────
+    _LIR_LEN = 4   # canonical LIR core: [WFY]xx[ILV]
+
+    def _nearest_lir(center: int, motifs: List[Dict]) -> Optional[int]:
+        if not motifs:
+            return None
+        return min(
+            abs(center - ((m["start"] - 1) + _LIR_LEN // 2))
+            for m in motifs
+        )
+
+    vl_dist = _nearest_lir(v_center, viral_lir or [])
+    hl_dist = _nearest_lir(h_center, host_lir  or [])
+
+    proximal_kferq = (
+        (v_dist  is not None and v_dist  <= proximity_window) or
+        (h_dist  is not None and h_dist  <= proximity_window)
+    )
+    proximal_lir = (
+        (vl_dist is not None and vl_dist <= proximity_window) or
+        (hl_dist is not None and hl_dist <= proximity_window)
+    )
+    proximal_combined = proximal_kferq or proximal_lir
+
     return {
-        "viral_kferq_dist":   v_dist,
-        "host_kferq_dist":    h_dist,
-        "proximal_deg_motif": proximal,
+        "viral_kferq_dist":    v_dist,
+        "host_kferq_dist":     h_dist,
+        "viral_lir_dist":      vl_dist,
+        "host_lir_dist":       hl_dist,
+        "proximal_kferq_motif": proximal_kferq,
+        "proximal_lir_motif":   proximal_lir,
+        "proximal_deg_motif":   proximal_combined,   # combined for backwards compat
     }
+
+
+def _detect_super_epitope_pairs(
+    sea_results:   List[Any],
+    viral_hj:      Dict,
+    viral_window:  int = 150,
+    host_window:   int = 150,
+) -> List[Dict]:
+    """
+    Detect TRUE SUPER-EPITOPE pairs: two ranked viral hit fragments where:
+      1. The viral fragment start positions are within *viral_window* residues.
+      2. The host  fragment start positions are within *host_window*  residues.
+      3. At least one T1 hinge position lies BETWEEN the two viral fragments
+         in the linear sequence (strict interior).
+
+    Returns a list of dicts (one per detected pair), sorted by combined score.
+    """
+    t1_positions = [h.position for h in viral_hj.get("hinges_t1", [])]
+    pairs: List[Dict] = []
+
+    n = len(sea_results)
+    for i in range(n):
+        for j in range(i + 1, n):
+            r1 = sea_results[i]
+            r2 = sea_results[j]
+            v_lo = min(r1.position1, r2.position1)
+            v_hi = max(r1.position1, r2.position1)
+            h_lo = min(r1.position2, r2.position2)
+            h_hi = max(r1.position2, r2.position2)
+
+            viral_span = v_hi - v_lo
+            host_span  = h_hi - h_lo
+
+            if viral_span > viral_window or host_span > host_window:
+                continue
+
+            bridging = [p for p in t1_positions if v_lo < p < v_hi]
+            if not bridging:
+                continue
+
+            pairs.append({
+                "hit_a_rank":         r1.rank,
+                "hit_b_rank":         r2.rank,
+                "hit_a_seq1":         r1.seq1,
+                "hit_b_seq1":         r2.seq1,
+                "hit_a_seq2":         r1.seq2,
+                "hit_b_seq2":         r2.seq2,
+                "hit_a_pos1":         r1.position1,
+                "hit_b_pos1":         r2.position1,
+                "hit_a_pos2":         r1.position2,
+                "hit_b_pos2":         r2.position2,
+                "viral_span":         viral_span,
+                "host_span":          host_span,
+                "bridging_t1_hinges": bridging,
+                "hit_a_score":        r1.final_sea_score,
+                "hit_b_score":        r2.final_sea_score,
+            })
+
+    # Sort by combined score of the two hits
+    pairs.sort(key=lambda p: p["hit_a_score"] + p["hit_b_score"], reverse=True)
+    return pairs
 
 
 def _calibration_check(
@@ -1490,8 +1693,10 @@ def orchestrate(
     # a host sequence near a KFERQ motif is the highest-priority SEA event.
     # Annotation only — no score mutation.  A proximal pair is floored at
     # Tier 2 in Step 7c to ensure it is never buried below T3.
-    viral_kferq_raw = viral_profile.get("kferq", [])
+    viral_kferq_raw   = viral_profile.get("kferq", [])
     host_kferq_raw_p2 = find_kferq_motifs(host_seq)   # reuse raw 1-based list
+    viral_lir_raw     = viral_profile.get("lir", [])
+    host_lir_raw      = host_profile.get("lir", [])
     _deg_proximity_map: Dict[tuple, Dict] = {}
     for r in sea_results:
         dp = _check_degradation_proximity(
@@ -1501,13 +1706,21 @@ def orchestrate(
             host_kferq       = host_kferq_raw_p2,
             seq_window       = 7,
             proximity_window = deg_proximity_window,
+            viral_lir        = viral_lir_raw,
+            host_lir         = host_lir_raw,
         )
         _deg_proximity_map[(r.position1, r.position2)] = dp
-        if dp["proximal_deg_motif"]:
+        if dp["proximal_kferq_motif"]:
             r.notes.append(
                 f"Phase2a KFERQ-proximal "
                 f"(v_dist={dp['viral_kferq_dist']}, "
                 f"h_dist={dp['host_kferq_dist']})"
+            )
+        if dp["proximal_lir_motif"]:
+            r.notes.append(
+                f"Phase2a LIR-proximal "
+                f"(v_dist={dp['viral_lir_dist']}, "
+                f"h_dist={dp['host_lir_dist']})"
             )
 
     # ── Step 7c: Phase 2 — degradation pathway convergence scoring ────────
@@ -1532,42 +1745,61 @@ def orchestrate(
                 f"tier={conv['phase2_tier']})"
             )
 
-        # Apply T2 floor for KFERQ-proximal pairs (Phase 2a override)
+        # Apply tier floor overrides (Phase 2a)
         dp = _deg_proximity_map.get((r.position1, r.position2), {})
-        effective_tier = conv["phase2_tier"]
-        if dp.get("proximal_deg_motif") and effective_tier == "T3":
+        effective_tier  = conv["phase2_tier"]
+        prox_kferq      = dp.get("proximal_kferq_motif", False)
+        prox_lir        = dp.get("proximal_lir_motif",   False)
+        # KFERQ + LIR both proximal → T1 floor
+        if prox_kferq and prox_lir and effective_tier in ("T2", "T3"):
+            effective_tier = "T1"
+        # LIR-only proximal → T2 floor
+        elif prox_lir and not prox_kferq and effective_tier == "T3":
+            effective_tier = "T2"
+        # KFERQ-only proximal → T2 floor (existing behaviour)
+        elif prox_kferq and not prox_lir and effective_tier == "T3":
             effective_tier = "T2"
 
+        phospho_exp = _phospho_exposure_score(r)
+
         phase2_pairs.append({
-            "rank":                  r.rank,
-            "seq1":                  r.seq1,
-            "seq2":                  r.seq2,
-            "position1":             r.position1,
-            "position2":             r.position2,
-            "convergence_score":     conv["convergence_score"],
-            "phase2_tier":           effective_tier,
-            "viral_context_score":   conv["viral_context_score"],
-            "host_context_score":    conv["host_context_score"],
-            "viral_dist_t1":         conv["viral_dist_t1"],
-            "viral_dist_t2":         conv["viral_dist_t2"],
-            "viral_dist_jammer":     conv["viral_dist_jammer"],
-            "host_dist_t1":          conv["host_dist_t1"],
-            "host_dist_t2":          conv["host_dist_t2"],
-            "host_dist_jammer":      conv["host_dist_jammer"],
-            "viral_sandwich":        conv["viral_sandwich"],
-            "host_sandwich":         conv["host_sandwich"],
-            "convergence_boost":     boost,
-            "final_sea_score":       r.final_sea_score,
+            "rank":                   r.rank,
+            "seq1":                   r.seq1,
+            "seq2":                   r.seq2,
+            "position1":              r.position1,
+            "position2":              r.position2,
+            "convergence_score":      conv["convergence_score"],
+            "phase2_tier":            effective_tier,
+            "viral_context_score":    conv["viral_context_score"],
+            "host_context_score":     conv["host_context_score"],
+            "viral_dist_t1":          conv["viral_dist_t1"],
+            "viral_dist_t2":          conv["viral_dist_t2"],
+            "viral_dist_jammer":      conv["viral_dist_jammer"],
+            "host_dist_t1":           conv["host_dist_t1"],
+            "host_dist_t2":           conv["host_dist_t2"],
+            "host_dist_jammer":       conv["host_dist_jammer"],
+            "viral_sandwich":         conv["viral_sandwich"],
+            "host_sandwich":          conv["host_sandwich"],
+            "convergence_boost":      boost,
+            "final_sea_score":        r.final_sea_score,
             "overlaps_known_epitope": (r.position1, r.position2) in _overlap_pos_set,
-            "viral_kferq_dist":      dp.get("viral_kferq_dist"),
-            "host_kferq_dist":       dp.get("host_kferq_dist"),
-            "proximal_deg_motif":    dp.get("proximal_deg_motif", False),
+            "viral_kferq_dist":       dp.get("viral_kferq_dist"),
+            "host_kferq_dist":        dp.get("host_kferq_dist"),
+            "viral_lir_dist":         dp.get("viral_lir_dist"),
+            "host_lir_dist":          dp.get("host_lir_dist"),
+            "proximal_kferq_motif":   prox_kferq,
+            "proximal_lir_motif":     prox_lir,
+            "proximal_deg_motif":     dp.get("proximal_deg_motif", False),
+            "phospho_exposure_score": phospho_exp,
         })
 
     # Re-sort and re-rank after convergence boosts
     sea_results.sort(key=lambda r: r.final_sea_score, reverse=True)
     for i, r in enumerate(sea_results, 1):
         r.rank = i
+
+    # ── Step 7e: TRUE SUPER-EPITOPE pair detection ───────────────────────
+    super_ep_pairs = _detect_super_epitope_pairs(sea_results, viral_hj)
 
     # ── Step 7d: Pre-Phase 4 calibration check ────────────────────────────
     calibration: Dict = {}
@@ -1620,4 +1852,5 @@ def orchestrate(
         host_hinge_jammer_profile        = host_hj,
         phase2_enriched_pairs            = phase2_pairs,
         calibration_result               = calibration,
+        super_epitope_pairs              = super_ep_pairs,
     )
