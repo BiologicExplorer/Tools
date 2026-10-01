@@ -738,12 +738,12 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
     a("")
 
     # ── Phase 2a — KFERQ Motif Proximity ────────────────────────────────
-    a("### Phase 2a — KFERQ Degradation Motif Proximity")
+    a("### Phase 2a — Degradation Motif Proximity (Additive Event Scoring)")
     a("")
-    a("*The primary mechanistic filter: a viral fragment that is homologous to a host*")
-    a("*sequence near a KFERQ-like CMA-targeting motif is the highest-priority SEA event.*")
-    a("*Proximity threshold: 30 residues (centre-to-centre).  V-KFdist / H-KFdist = distance*")
-    a("*to nearest KFERQ motif on viral / host side.  Pairs flagged here are floored at Tier 2.*")
+    a("*Distance-weighted proximity to LIR and KFERQ degradation motifs on both viral and host*")
+    a("*sequences is computed as an additive event score (0–1) and multiplied by the*")
+    a("*proximity_event_weight to boost final_sea_score.  No tier floors are applied;*")
+    a("*tier classification is output-only, derived from total_event_signal.*")
     a("")
 
     p2 = result.phase2_enriched_pairs
@@ -754,15 +754,12 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
 
     a(f"**Proximity summary:** KFERQ-proximal={len(proximal_kferq_pairs)}  |  "
       f"LIR-proximal={len(proximal_lir_pairs)}  |  "
-      f"Both KFERQ+LIR={len(proximal_both_pairs)}  |  "
-      f"T1-floored (both)={sum(1 for p in proximal_both_pairs if p['phase2_tier']=='T1')}")
-    a("")
-    a("*Tier floor rules: KFERQ+LIR both proximal → T1 floor; LIR-only → T2 floor; KFERQ-only → T2 floor.*")
+      f"Both KFERQ+LIR={len(proximal_both_pairs)}")
     a("")
     if proximal_pairs:
         proximal_sorted = sorted(proximal_pairs, key=lambda x: x["final_sea_score"], reverse=True)
-        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | V-KFdist | H-KFdist | V-LIRdist | H-LIRdist | Tier | Phospho-Exp | Score | KE |")
-        a("|---|-----------|-------|----------|-------|----------|----------|-----------|-----------|------|-------------|-------|----|")
+        a("| # | Viral Seq | V-Pos | Host Seq | H-Pos | V-KFdist | H-KFdist | V-LIRdist | H-LIRdist | Prox-Score | Prox-Boost | Tier | Score | KE |")
+        a("|---|-----------|-------|----------|-------|----------|----------|-----------|-----------|------------|------------|------|-------|----|")
         for i, p in enumerate(proximal_sorted, 1):
             v_pos  = p["position1"] + 1
             h_pos  = p["position2"] + 1
@@ -770,10 +767,11 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
             hkf    = str(p["host_kferq_dist"])  if p["host_kferq_dist"]  is not None else "—"
             vlir   = str(p["viral_lir_dist"])   if p.get("viral_lir_dist") is not None else "—"
             hlir   = str(p["host_lir_dist"])    if p.get("host_lir_dist")  is not None else "—"
-            pexp   = f"{p.get('phospho_exposure_score', 0.0):.3f}"
+            pscr   = f"{p.get('proximity_event_score', 0.0):.4f}"
+            pboost = f"{p.get('proximity_boost', 0.0):.4f}"
             ke     = "★" if p.get("overlaps_known_epitope") else "—"
             a(f"| {i} | `{p['seq1']}` | {v_pos} | `{p['seq2']}` | {h_pos} "
-              f"| {vkf} | {hkf} | {vlir} | {hlir} | {p['phase2_tier']} | {pexp} | {p['final_sea_score']:.4f} | {ke} |")
+              f"| {vkf} | {hkf} | {vlir} | {hlir} | {pscr} | {pboost} | {p['phase2_tier']} | {p['final_sea_score']:.4f} | {ke} |")
     else:
         a("*No homologous pairs found within the KFERQ or LIR proximity threshold.*")
         a("*Interpretation: degradation motif co-localisation is absent at this threshold;*")
@@ -799,9 +797,9 @@ def _build_report_lines(result: OrchestratorResult) -> List[str]:
         a("")
         a("| Tier | Criteria | Count |")
         a("|------|----------|-------|")
-        a(f"| **T1** | convergence ≥ 0.45 OR dual-sandwich OR (≥ 0.30 + single sandwich) | {t1_cnt} |")
-        a(f"| **T2** | convergence ≥ 0.15 OR KFERQ-proximal (Phase 2a floor) | {t2_cnt} |")
-        a(f"| **T3** | convergence < 0.15, no KFERQ proximity | {t3_cnt} |")
+        a(f"| **T1** | total_event_signal ≥ 0.45 OR dual-sandwich OR (≥ 0.30 + single sandwich) | {t1_cnt} |")
+        a(f"| **T2** | total_event_signal ≥ 0.15 | {t2_cnt} |")
+        a(f"| **T3** | total_event_signal < 0.15 | {t3_cnt} |")
         a("")
 
         # Top 20 pairs sorted by convergence
@@ -1381,6 +1379,65 @@ def _check_degradation_proximity(
     }
 
 
+def _compute_proximity_event_score(
+    dp: Dict,
+    window: int  = 30,
+    w_viral_lir:   float = 1.0,
+    w_host_lir:    float = 1.5,
+    w_viral_kferq: float = 1.0,
+    w_host_kferq:  float = 2.0,
+) -> Dict:
+    """
+    Distance-weighted additive proximity event score.
+
+    For each of the four degradation-event signals (viral LIR, host LIR,
+    viral KFERQ, host KFERQ) a component score is computed as:
+
+        component = max(0, 1 - dist / window) × weight
+
+    where *dist* is the distance in residues to the nearest motif of that
+    type (``None`` → treated as out-of-window).  The four components are
+    summed and normalised to [0, 1] by dividing by the maximum possible
+    weight sum.
+
+    Parameters
+    ----------
+    dp     : dict returned by ``_check_degradation_proximity()``
+    window : decay window in residues (default 30)
+    w_*    : per-signal weights
+
+    Returns
+    -------
+    dict with keys:
+        viral_lir_score, host_lir_score,
+        viral_kferq_score, host_kferq_score,
+        proximity_event_score   (0–1, normalised)
+    """
+    max_possible = w_viral_lir + w_host_lir + w_viral_kferq + w_host_kferq
+
+    def _component(dist_key: str, weight: float) -> float:
+        dist = dp.get(dist_key)
+        if dist is None:
+            return 0.0
+        return max(0.0, 1.0 - dist / window) * weight
+
+    vl = _component("viral_lir_dist",   w_viral_lir)
+    hl = _component("host_lir_dist",    w_host_lir)
+    vk = _component("viral_kferq_dist", w_viral_kferq)
+    hk = _component("host_kferq_dist",  w_host_kferq)
+
+    raw_sum   = vl + hl + vk + hk
+    normalised = raw_sum / max_possible if max_possible > 0 else 0.0
+
+    return {
+        "viral_lir_score":       round(vl / w_viral_lir   if w_viral_lir   else 0.0, 4),
+        "host_lir_score":        round(hl / w_host_lir    if w_host_lir    else 0.0, 4),
+        "viral_kferq_score":     round(vk / w_viral_kferq if w_viral_kferq else 0.0, 4),
+        "host_kferq_score":      round(hk / w_host_kferq  if w_host_kferq  else 0.0, 4),
+        "proximity_event_score": round(min(1.0, normalised), 4),
+    }
+
+
 def _detect_super_epitope_pairs(
     sea_results:   List[Any],
     viral_hj:      Dict,
@@ -1549,6 +1606,9 @@ def orchestrate(
     convergence_bonus_weight:  float           = 3.0,
     # Phase 2a — KFERQ proximity window (residues)
     deg_proximity_window:      int             = 30,
+    # Phase 2a — additive proximity event weight (multiplier applied to
+    # the normalised proximity_event_score before adding to final_sea_score)
+    proximity_event_weight:    float           = 5.0,
 ) -> OrchestratorResult:
     """
     Run the full SEA Orchestrator pipeline.
@@ -1745,20 +1805,40 @@ def orchestrate(
                 f"tier={conv['phase2_tier']})"
             )
 
-        # Apply tier floor overrides (Phase 2a)
+        # ── Phase 2a: Additive proximity event scoring ──────────────────
         dp = _deg_proximity_map.get((r.position1, r.position2), {})
-        effective_tier  = conv["phase2_tier"]
-        prox_kferq      = dp.get("proximal_kferq_motif", False)
-        prox_lir        = dp.get("proximal_lir_motif",   False)
-        # KFERQ + LIR both proximal → T1 floor
-        if prox_kferq and prox_lir and effective_tier in ("T2", "T3"):
+        prox = _compute_proximity_event_score(
+            dp, window=deg_proximity_window
+        )
+        prox_boost = round(prox["proximity_event_score"] * proximity_event_weight, 4)
+        if prox_boost > 0:
+            r.final_sea_score = round(r.final_sea_score + prox_boost, 4)
+            r.notes.append(
+                f"Phase2a proximity event boost +{prox_boost:.4f} "
+                f"(prox_score={prox['proximity_event_score']:.4f}, "
+                f"weight={proximity_event_weight})"
+            )
+
+        # ── Tier assignment (output-only, no floors) ─────────────────────
+        # total_event_signal combines convergence + proximity on [0, 1].
+        # Tier 1 = highest priority (alphanumerically first).
+        v_sand = conv.get("viral_sandwich", False)
+        h_sand = conv.get("host_sandwich",  False)
+        total_event_signal = min(
+            1.0,
+            conv["convergence_score"] + prox["proximity_event_score"]
+        )
+        if (
+            total_event_signal >= 0.45
+            or (v_sand and h_sand)
+            or (total_event_signal >= 0.30 and (v_sand or h_sand))
+        ):
             effective_tier = "T1"
-        # LIR-only proximal → T2 floor
-        elif prox_lir and not prox_kferq and effective_tier == "T3":
+        elif total_event_signal >= 0.15:
             effective_tier = "T2"
-        # KFERQ-only proximal → T2 floor (existing behaviour)
-        elif prox_kferq and not prox_lir and effective_tier == "T3":
-            effective_tier = "T2"
+        else:
+            effective_tier = "T3"
+
 
         phospho_exp = _phospho_exposure_score(r)
 
@@ -1787,9 +1867,16 @@ def orchestrate(
             "host_kferq_dist":        dp.get("host_kferq_dist"),
             "viral_lir_dist":         dp.get("viral_lir_dist"),
             "host_lir_dist":          dp.get("host_lir_dist"),
-            "proximal_kferq_motif":   prox_kferq,
-            "proximal_lir_motif":     prox_lir,
-            "proximal_deg_motif":     dp.get("proximal_deg_motif", False),
+            "proximal_kferq_motif":   dp.get("proximal_kferq_motif", False),
+            "proximal_lir_motif":     dp.get("proximal_lir_motif",   False),
+            "proximal_deg_motif":     dp.get("proximal_deg_motif",   False),
+            "viral_lir_score":        prox["viral_lir_score"],
+            "host_lir_score":         prox["host_lir_score"],
+            "viral_kferq_score":      prox["viral_kferq_score"],
+            "host_kferq_score":       prox["host_kferq_score"],
+            "proximity_event_score":  prox["proximity_event_score"],
+            "proximity_boost":        prox_boost,
+            "total_event_signal":     round(total_event_signal, 4),
             "phospho_exposure_score": phospho_exp,
         })
 
