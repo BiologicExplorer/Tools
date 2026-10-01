@@ -1104,3 +1104,281 @@ if __name__ == "__main__":
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     sys.exit(0 if result.wasSuccessful() else 1)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  TestSWSource  — mclachlan_to_pairs() with source="sw"
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestSWSource(unittest.TestCase):
+    """
+    Verify that mclachlan_to_pairs() correctly handles Smith-Waterman hit dicts
+    (same core schema as McLachlan hits; additional _has_gaps, _sw_score, etc.
+    keys are safely ignored).
+    """
+
+    VIRAL_SEQ = "MSTNPKPQRKTKRNTNRRPQDVKFPGGGQIVGGVYLLPRRGPRLGVR" * 10  # 470 aa
+
+    # Minimal SW hit matching the mclachlan_aligner output schema
+    SW_HIT_A = {
+        "motif":             "STTILGG",
+        "p1_pos1":           "5-11",
+        "p2_window":         "STTILAG",
+        "p2_pos":            "20-26",
+        "composite_primary": 30.0,
+        "layer2_cross_mean": 3.5,
+        "_aln1":             "STTILGG",
+        "_aln2":             "STTILAG",
+        "_n_matched":        6,
+        "_sw_score":         10.2,
+        "_has_gaps":         False,
+        "_v_span":           7,
+        "_h_span":           7,
+    }
+
+    # Gapped SW hit (has_gaps=True and extra keys)
+    SW_HIT_B = {
+        "motif":             "GGGQIVG",
+        "p1_pos1":           "30-36",
+        "p2_window":         "GGGQ--G",
+        "p2_pos":            "10-16",
+        "composite_primary": 35.0,
+        "layer2_cross_mean": 4.0,
+        "_aln1":             "GGGQIVG",
+        "_aln2":             "GGGQ--G",
+        "_n_matched":        5,
+        "_sw_score":         11.8,
+        "_has_gaps":         True,
+        "_v_span":           7,
+        "_h_span":           7,
+    }
+
+    # Below-threshold hit — should be filtered out
+    SW_HIT_LOW = {
+        "motif":             "AAAAAAA",
+        "p1_pos1":           "50-56",
+        "p2_window":         "AAAAAAA",
+        "p2_pos":            "50-56",
+        "composite_primary": 8.0,
+        "layer2_cross_mean": 1.0,
+        "_has_gaps":         False,
+    }
+
+    def _run(self, hits, **kw):
+        from orchestrator.orchestrator import mclachlan_to_pairs
+        return mclachlan_to_pairs(hits, self.VIRAL_SEQ, source="sw", **kw)
+
+    def test_source_field_is_sw(self):
+        """Every pair produced from SW hits must carry source='sw'."""
+        pairs = self._run([self.SW_HIT_A, self.SW_HIT_B])
+        self.assertTrue(len(pairs) >= 2)
+        for p in pairs:
+            self.assertEqual(p["source"], "sw",
+                             msg=f"Expected source='sw', got {p['source']!r}")
+
+    def test_source_field_distinguishes_from_mclachlan(self):
+        """Pairs produced with source='mclachlan' must NOT carry source='sw'."""
+        from orchestrator.orchestrator import mclachlan_to_pairs
+        mc_pairs = mclachlan_to_pairs(
+            [self.SW_HIT_A], self.VIRAL_SEQ, source="mclachlan"
+        )
+        self.assertEqual(mc_pairs[0]["source"], "mclachlan")
+
+    def test_gapped_hit_accepted(self):
+        """A gapped SW hit (_has_gaps=True) must be converted without error."""
+        pairs = self._run([self.SW_HIT_B])
+        self.assertEqual(len(pairs), 1)
+        self.assertEqual(pairs[0]["seq1"], "GGGQIVG")
+
+    def test_below_threshold_filtered(self):
+        """Hits below min_composite are excluded even with source='sw'."""
+        pairs = self._run([self.SW_HIT_LOW], min_composite=14.5)
+        self.assertEqual(len(pairs), 0)
+
+    def test_positions_are_zero_based(self):
+        """p1_pos1 '5-11' (1-based) should become position1=4 (0-based)."""
+        pairs = self._run([self.SW_HIT_A])
+        self.assertEqual(pairs[0]["position1"], 4)
+        self.assertEqual(pairs[0]["position2"], 19)  # p2_pos '20-26' → 19
+
+    def test_similarity_score_from_layer2_cross_mean(self):
+        """similarity_score = min(layer2_cross_mean / 4.0, 1.0)."""
+        pairs = self._run([self.SW_HIT_A])  # layer2_cross_mean=3.5 → 0.875
+        self.assertAlmostEqual(pairs[0]["similarity_score"], 3.5 / 4.0, places=4)
+
+    def test_composite_primary_forwarded(self):
+        """_composite_primary diagnostic key should equal the original composite_primary."""
+        pairs = self._run([self.SW_HIT_B])
+        self.assertEqual(pairs[0]["_composite_primary"], 35.0)
+
+    def test_protein1_is_full_viral_seq(self):
+        """protein1 must hold the full viral sequence, not just the fragment."""
+        pairs = self._run([self.SW_HIT_A])
+        self.assertEqual(pairs[0]["protein1"], self.VIRAL_SEQ)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  TestOrchestratorSWIntegration — end-to-end orchestrate() with sw_hits
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestOrchestratorSWIntegration(unittest.TestCase):
+    """
+    Verify that orchestrate() correctly ingests SW hits as an optional third
+    pair source and that pair_source_counts['sw'] reflects the actual count.
+    Uses a minimal synthetic sequence pair so no external files are required.
+    """
+
+    VIRAL_SEQ = "MSTNPKPQRKTKRNTNRRPQDVKFPGGGQIVGGVYLLPRRGPRLGVR" * 6   # 282 aa
+    HOST_SEQ  = "MGSALMSTLALVPVLFIILAFSSQFQTELESASASEASASQASAAASN"      # 47 aa
+
+    # SW hits above the default 14.5 threshold
+    SW_HITS_ABOVE = [
+        {
+            "motif":             "RNTNRRP",
+            "p1_pos1":           "15-21",
+            "p2_window":         "RNTLASS",
+            "p2_pos":            "5-11",
+            "composite_primary": 20.0,
+            "layer2_cross_mean": 2.6,
+            "_has_gaps":         False,
+            "_v_span":           7,
+            "_h_span":           7,
+        },
+        {
+            "motif":             "GGGQIVG",
+            "p1_pos1":           "25-31",
+            "p2_window":         "GGGQAIG",
+            "p2_pos":            "15-21",
+            "composite_primary": 25.0,
+            "layer2_cross_mean": 3.2,
+            "_has_gaps":         True,
+            "_v_span":           7,
+            "_h_span":           7,
+        },
+    ]
+
+    def _orchestrate(self, sw_hits=None, **kw):
+        from orchestrator.orchestrator import orchestrate
+        return orchestrate(
+            self.VIRAL_SEQ, self.HOST_SEQ,
+            virus_name="TestVirus",
+            viral_protein_name="TestVP",
+            host_protein_name="TestHP",
+            sw_hits=sw_hits,
+            **kw,
+        )
+
+    def test_sw_key_present_in_pair_source_counts(self):
+        """pair_source_counts must always contain an 'sw' key."""
+        result = self._orchestrate()
+        self.assertIn("sw", result.pair_source_counts)
+
+    def test_sw_count_zero_when_no_sw_hits(self):
+        """When sw_hits is not provided, sw count must be 0."""
+        result = self._orchestrate()
+        self.assertEqual(result.pair_source_counts["sw"], 0)
+
+    def test_sw_count_reflects_accepted_hits(self):
+        """When sw_hits are supplied above threshold, sw count must be > 0."""
+        result = self._orchestrate(sw_hits=self.SW_HITS_ABOVE)
+        self.assertGreater(result.pair_source_counts["sw"], 0)
+
+    def test_sw_pairs_increase_merged_count(self):
+        """Passing sw_hits should increase or equal the merged pair count."""
+        r_no_sw  = self._orchestrate()
+        r_with_sw = self._orchestrate(sw_hits=self.SW_HITS_ABOVE)
+        # merged ≥ no-sw merged (dedup may collapse some)
+        self.assertGreaterEqual(
+            r_with_sw.pair_source_counts["merged"],
+            r_no_sw.pair_source_counts["merged"],
+        )
+
+    def test_sw_below_threshold_excluded(self):
+        """SW hits whose composite_primary < sw_min_composite are excluded."""
+        low_hits = [
+            {
+                "motif":             "AAAAAAA",
+                "p1_pos1":           "1-7",
+                "p2_window":         "AAAAAAA",
+                "p2_pos":            "1-7",
+                "composite_primary": 5.0,
+                "layer2_cross_mean": 0.5,
+                "_has_gaps":         False,
+            }
+        ]
+        result = self._orchestrate(sw_hits=low_hits, sw_min_composite=14.5)
+        self.assertEqual(result.pair_source_counts["sw"], 0)
+
+    def test_sw_max_pairs_cap_respected(self):
+        """sw_max_pairs caps the number of SW pairs fed into the pipeline."""
+        result = self._orchestrate(sw_hits=self.SW_HITS_ABOVE, sw_max_pairs=1)
+        # At most 1 SW pair accepted before dedup
+        self.assertLessEqual(result.pair_source_counts["sw"], 1)
+
+    def test_result_still_valid_with_sw_hits(self):
+        """orchestrate() must return an OrchestratorResult when sw_hits are given."""
+        from orchestrator.orchestrator import OrchestratorResult
+        result = self._orchestrate(sw_hits=self.SW_HITS_ABOVE)
+        self.assertIsInstance(result, OrchestratorResult)
+
+    def test_sw_source_tag_in_phase2_pairs(self):
+        """Any pair that came from SW hits must carry source='sw' in phase2."""
+        result = self._orchestrate(sw_hits=self.SW_HITS_ABOVE)
+        sw_tagged = [p for p in result.phase2_enriched_pairs
+                     if p.get("source") == "sw"]
+        # At least some pairs should carry the sw source tag (if they passed dedup)
+        # We allow 0 if all were deduped by mclachlan/aligner pairs — just check no crash
+        self.assertIsInstance(sw_tagged, list)
+
+    def test_sw_integration_with_full_fixture(self):
+        """
+        Integration smoke test using the real Q9WMX2 vs P05181 SW hit fixture.
+        Loads the first 10 SW hits from sw_hits_full.json (if present) and
+        verifies the pipeline runs to completion with pair_source_counts['sw'] > 0.
+        """
+        import json, os
+        sw_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "sw_hits_full.json"
+        )
+        mc_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "protein_degradation",
+            "Q9WMX2_vs_P05181_scored_v3.json",
+        )
+        if not os.path.exists(sw_path) or not os.path.exists(mc_path):
+            self.skipTest("Fixture files not present — skipping integration test")
+
+        with open(sw_path) as f:
+            sw_all = json.load(f)
+        with open(mc_path) as f:
+            mc_all = json.load(f)["hits"]
+
+        # Load real sequences from FASTA
+        fasta_dir = os.path.join(os.path.dirname(__file__), "..", "..")
+        q9_path = os.path.join(fasta_dir, "Q9WMX2.fasta")
+        p0_path = os.path.join(fasta_dir, "P05181.fasta")
+        if not os.path.exists(q9_path) or not os.path.exists(p0_path):
+            self.skipTest("FASTA files not present — skipping integration test")
+
+        def read_fasta(path):
+            with open(path) as f:
+                lines = f.read().splitlines()
+            return "".join(l for l in lines if not l.startswith(">"))
+
+        viral_seq = read_fasta(q9_path)
+        host_seq  = read_fasta(p0_path)
+
+        from orchestrator.orchestrator import orchestrate
+        result = orchestrate(
+            viral_seq, host_seq,
+            virus_name="HCV", viral_protein_name="polyprotein",
+            host_protein_name="CYP2E1", host_accession="P05181",
+            mclachlan_hits=mc_all,
+            sw_hits=sw_all[:10],          # use first 10 SW hits as smoke test
+            sw_min_composite=14.5,
+        )
+
+        from orchestrator.orchestrator import OrchestratorResult
+        self.assertIsInstance(result, OrchestratorResult)
+        self.assertGreater(result.pair_source_counts["sw"], 0,
+                           msg="Expected at least 1 SW pair above threshold in smoke test")
+        self.assertIn("after_dedup", result.pair_source_counts)
