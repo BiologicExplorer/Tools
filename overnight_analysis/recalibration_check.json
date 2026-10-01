@@ -1,0 +1,58 @@
+{
+  "LLLFLLL_MELFLLL_combined": 0.5851,
+  "LTPLRDW_LTTLRNY_combined": 1.1467,
+  "PCSFTTL_RFSLTTL_combined": 1.0962,
+  "epitope_overlapping_rank_correct": true,
+  "top_10": [
+    {
+      "seq1": "STDSTTI",
+      "seq2": "ETTSTTL",
+      "combined": 1.9081
+    },
+    {
+      "seq1": "TDSTTIL",
+      "seq2": "TTSTTLR",
+      "combined": 1.7934
+    },
+    {
+      "seq1": "SGTATAS",
+      "seq2": "AGTETTS",
+      "combined": 1.7034
+    },
+    {
+      "seq1": "SGVLTTS",
+      "seq2": "AGTETTS",
+      "combined": 1.7025
+    },
+    {
+      "seq1": "YSPGQRV",
+      "seq2": "FSTGKRV",
+      "combined": 1.3877
+    },
+    {
+      "seq1": "DASGKRV",
+      "seq2": "FSTGKRV",
+      "combined": 1.386
+    },
+    {
+      "seq1": "GTTDRFG",
+      "seq2": "STTLRYG",
+      "combined": 1.3746
+    },
+    {
+      "seq1": "HSSDQRP",
+      "seq2": "HSSWNLP",
+      "combined": 1.3446
+    },
+    {
+      "seq1": "KDVRNLS",
+      "seq2": "KDIRRFS",
+      "combined": 1.3064
+    },
+    {
+      "seq1": "SPGSSQK",
+      "seq2": "LPGSHRK",
+      "combined": 1.2949
+    }
+  ]
+}
