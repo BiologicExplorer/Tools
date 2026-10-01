@@ -5,8 +5,8 @@ Regression tests for the SEA Orchestrator.
 
 Verified baseline (HCV polyprotein Q9WMX2 vs CYP2E1 P05181):
   - top final_sea_score  ≥ 17.0
-  - top architecture     = SUPER_EPITOPE
-  - at least 1 super-epitope hit
+  - top architecture     = COMPLETE_SEA
+  - at least 1 complete-sea hit
 
 Run from repo root:
     python orchestrator/tests/orchestrator_test.py
@@ -38,6 +38,8 @@ from orchestrator.orchestrator import (
     get_epitope_ranges,
     apply_epitope_proximity_bonus,
     _check_degradation_proximity,
+    _phospho_exposure_score,
+    _detect_super_epitope_pairs,
 )
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -230,8 +232,8 @@ class TestOrchestratorRegression(unittest.TestCase):
             f"Expected top score ≥ 17.0, got {top_score:.4f}"
         )
 
-    def test_top_architecture_is_super_epitope(self):
-        """Top hit architecture must be SUPER_EPITOPE."""
+    def test_top_architecture_is_complete_sea(self):
+        """Top hit architecture must be COMPLETE_SEA."""
         top = self.result.sea_results[0]
         arc_name = (
             top.architecture_class.name
@@ -239,14 +241,14 @@ class TestOrchestratorRegression(unittest.TestCase):
             else str(top.architecture_class)
         )
         self.assertEqual(
-            arc_name, "SUPER_EPITOPE",
-            f"Expected SUPER_EPITOPE, got {arc_name}"
+            arc_name, "COMPLETE_SEA",
+            f"Expected COMPLETE_SEA, got {arc_name}"
         )
 
-    def test_at_least_one_super_epitope(self):
-        """At least one super-epitope hit must be found."""
-        n_super = sum(1 for r in self.result.sea_results if r.is_super_epitope)
-        self.assertGreater(n_super, 0, "Expected at least one SUPER_EPITOPE hit")
+    def test_at_least_one_complete_sea(self):
+        """At least one complete-sea hit must be found."""
+        n_super = sum(1 for r in self.result.sea_results if r.is_complete_sea)
+        self.assertGreater(n_super, 0, "Expected at least one COMPLETE_SEA hit")
 
     # ── Pair source counts ────────────────────────────────────────────────
 
@@ -280,13 +282,13 @@ class TestOrchestratorRegression(unittest.TestCase):
     # ── Risk summary ──────────────────────────────────────────────────────
 
     def test_risk_summary_overall_risk_not_low(self):
-        """Given a SUPER_EPITOPE hit, overall_risk must not be LOW."""
+        """Given a COMPLETE_SEA hit, overall_risk must not be LOW."""
         risk = self.result.risk_summary.get("overall_risk")
         self.assertNotEqual(risk, "LOW", f"Unexpected risk=LOW for HCV/CYP2E1 case")
 
     def test_risk_summary_keys_present(self):
         expected = {
-            "top_architecture", "top_final_score", "n_super_epitope",
+            "top_architecture", "top_final_score", "n_complete_sea",
             "n_sandwiched", "n_pairs_scored", "host_is_cma_member",
             "host_cma_category", "viral_n_kferq", "host_n_kferq", "overall_risk",
         }
@@ -668,6 +670,325 @@ class TestCheckDegradationProximity(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Unit tests — _phospho_exposure_score()
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestPhosphoExposureScore(unittest.TestCase):
+    """
+    Tests for the thin normalisation helper that converts
+    SEAResult.phospho_t1_hinge_dist to a 0–1 phospho-exposure score.
+
+    The orchestrator does NOT re-scan hinge positions; it only normalises
+    the distance already computed by sea_module.
+    """
+
+    class _FakeSEAResult:
+        """Minimal stand-in for SEAResult with a settable phospho_t1_hinge_dist."""
+        def __init__(self, dist):
+            self.phospho_t1_hinge_dist = dist
+
+    def test_zero_distance_returns_one(self):
+        """dist=0 means hinge is at the fragment → score = 1.0."""
+        r = self._FakeSEAResult(dist=0)
+        self.assertAlmostEqual(_phospho_exposure_score(r, window=15), 1.0, places=4)
+
+    def test_full_window_distance_returns_zero(self):
+        """dist == window → score = 0.0."""
+        r = self._FakeSEAResult(dist=15)
+        self.assertAlmostEqual(_phospho_exposure_score(r, window=15), 0.0, places=4)
+
+    def test_beyond_window_clamped_to_zero(self):
+        """dist > window must not produce negative scores."""
+        r = self._FakeSEAResult(dist=30)
+        score = _phospho_exposure_score(r, window=15)
+        self.assertEqual(score, 0.0)
+
+    def test_half_window_returns_half(self):
+        """dist = window/2 → score ≈ 0.5."""
+        r = self._FakeSEAResult(dist=7.5)
+        self.assertAlmostEqual(_phospho_exposure_score(r, window=15), 0.5, places=4)
+
+    def test_none_distance_returns_zero(self):
+        """phospho_t1_hinge_dist = None (no T1 hinge in window) → score = 0.0."""
+        r = self._FakeSEAResult(dist=None)
+        self.assertEqual(_phospho_exposure_score(r), 0.0)
+
+    def test_missing_attribute_returns_zero(self):
+        """An object without phospho_t1_hinge_dist attr must not raise."""
+        class _Bare:
+            pass
+        self.assertEqual(_phospho_exposure_score(_Bare()), 0.0)
+
+    def test_score_rounded_to_4dp(self):
+        """Result must be rounded to 4 decimal places."""
+        r = self._FakeSEAResult(dist=3)
+        score = _phospho_exposure_score(r, window=7)
+        # 1.0 - 3/7 = 0.571428... → 0.5714
+        self.assertEqual(score, round(1.0 - 3 / 7, 4))
+
+    def test_score_in_unit_interval(self):
+        """Score must always be in [0.0, 1.0] for any non-negative distance."""
+        r_obj = self._FakeSEAResult(dist=None)
+        for d in [0, 1, 7, 14, 15, 16, 100]:
+            r_obj.phospho_t1_hinge_dist = d
+            s = _phospho_exposure_score(r_obj, window=15)
+            self.assertGreaterEqual(s, 0.0)
+            self.assertLessEqual(s, 1.0)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Unit tests — _detect_super_epitope_pairs()
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestDetectSuperEpitopePairs(unittest.TestCase):
+    """
+    Unit tests for the TRUE SUPER-EPITOPE detector.
+
+    Two ranked viral hit fragments form a TRUE SUPER-EPITOPE when:
+      1. Their viral fragment positions are within viral_window residues.
+      2. Their host  fragment positions are within host_window  residues.
+      3. At least one T1 hinge position lies STRICTLY BETWEEN the two viral
+         fragment start positions.
+    """
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    class _FakeHinge:
+        def __init__(self, position: int):
+            self.position = position
+
+    @staticmethod
+    def _make_sea_result(rank: int, pos1: int, pos2: int, score: float = 10.0):
+        """Build a minimal SEAResult-like object."""
+        from sea.sea_module import SEAResult
+        r = SEAResult(
+            rank=rank,
+            seq1="AAAAAAA",
+            seq2="AAAAAAA",
+            position1=pos1,
+            position2=pos2,
+        )
+        r.final_sea_score = score
+        return r
+
+    def _viral_hj(self, t1_positions):
+        """Build a viral_hj dict with the given T1 hinge positions."""
+        return {"hinges_t1": [self._FakeHinge(p) for p in t1_positions]}
+
+    # ── Tests ─────────────────────────────────────────────────────────────────
+
+    def test_finds_pair_with_bridging_hinge(self):
+        """Two viral hits within window with a T1 hinge between them → 1 pair."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=200)
+        r2 = self._make_sea_result(rank=2, pos1=150, pos2=220)
+        # T1 hinge at 125 is strictly between 100 and 150
+        vjh = self._viral_hj([125])
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 1)
+        self.assertIn(125, result[0]["bridging_t1_hinges"])
+
+    def test_no_pair_without_bridging_hinge(self):
+        """Same viral hits but no T1 hinge between them → no pairs returned."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=200)
+        r2 = self._make_sea_result(rank=2, pos1=150, pos2=220)
+        # T1 hinge at 200 is OUTSIDE the viral span [100, 150]
+        vjh = self._viral_hj([200])
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 0)
+
+    def test_no_pair_when_viral_span_exceeds_window(self):
+        """Viral span > viral_window → pair excluded."""
+        r1 = self._make_sea_result(rank=1, pos1=0,   pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=200, pos2=10)
+        vjh = self._viral_hj([100])   # hinge between them but span > 150
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 0)
+
+    def test_no_pair_when_host_span_exceeds_window(self):
+        """Host span > host_window → pair excluded."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=200)
+        vjh = self._viral_hj([120])   # hinge within viral span, but host span = 200 > 150
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 0)
+
+    def test_hinge_at_boundary_not_bridging(self):
+        """Hinge exactly at v_lo or v_hi is not 'strictly between' → no pair."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=20)
+        # Hinge exactly at 100 (== v_lo) — NOT strictly interior
+        vjh = self._viral_hj([100])
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 0)
+
+    def test_hinge_at_upper_boundary_not_bridging(self):
+        """Hinge exactly at v_hi is not 'strictly between' → no pair."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=20)
+        vjh = self._viral_hj([140])  # == v_hi
+        result = _detect_super_epitope_pairs([r1, r2], vjh, viral_window=150, host_window=150)
+        self.assertEqual(len(result), 0)
+
+    def test_result_sorted_by_combined_score(self):
+        """Pairs are returned sorted by hit_a_score + hit_b_score descending."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0,   score=5.0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=20,  score=5.0)
+        r3 = self._make_sea_result(rank=3, pos1=105, pos2=5,   score=20.0)
+        r4 = self._make_sea_result(rank=4, pos1=145, pos2=25,  score=20.0)
+        vjh = self._viral_hj([120])
+        result = _detect_super_epitope_pairs([r1, r2, r3, r4], vjh)
+        # All pairs with bridging hinge — highest combined score first
+        self.assertGreater(len(result), 0)
+        for idx in range(len(result) - 1):
+            combined_a = result[idx]["hit_a_score"] + result[idx]["hit_b_score"]
+            combined_b = result[idx + 1]["hit_a_score"] + result[idx + 1]["hit_b_score"]
+            self.assertGreaterEqual(combined_a, combined_b)
+
+    def test_empty_sea_results_returns_empty(self):
+        """No sea results → no pairs."""
+        result = _detect_super_epitope_pairs([], self._viral_hj([100]))
+        self.assertEqual(result, [])
+
+    def test_empty_hinges_returns_empty(self):
+        """No T1 hinges at all → no pairs."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=20)
+        result = _detect_super_epitope_pairs([r1, r2], self._viral_hj([]))
+        self.assertEqual(result, [])
+
+    def test_result_dict_has_expected_keys(self):
+        """Returned pair dicts must carry all required fields."""
+        r1 = self._make_sea_result(rank=1, pos1=100, pos2=0)
+        r2 = self._make_sea_result(rank=2, pos1=140, pos2=20)
+        vjh = self._viral_hj([120])
+        result = _detect_super_epitope_pairs([r1, r2], vjh)
+        self.assertEqual(len(result), 1)
+        expected_keys = {
+            "hit_a_rank", "hit_b_rank",
+            "hit_a_seq1", "hit_b_seq1",
+            "hit_a_seq2", "hit_b_seq2",
+            "hit_a_pos1", "hit_b_pos1",
+            "hit_a_pos2", "hit_b_pos2",
+            "viral_span", "host_span",
+            "bridging_t1_hinges",
+            "hit_a_score", "hit_b_score",
+        }
+        for key in expected_keys:
+            self.assertIn(key, result[0], f"Missing key in pair dict: {key}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Unit tests — _check_degradation_proximity() LIR fields
+# ════════════════════════════════════════════════════════════════════════════
+
+class TestCheckDegradationProximityLIR(unittest.TestCase):
+    """
+    Tests for the LIR proximity fields added to _check_degradation_proximity().
+
+    These complement the existing TestCheckDegradationProximity class and focus
+    solely on the new viral_lir / host_lir parameters and the derived fields:
+      proximal_lir_motif, viral_lir_dist, host_lir_dist.
+    """
+
+    def _lir(self, start: int) -> dict:
+        """Minimal LIR motif dict (1-based start, 4-residue core)."""
+        return {"start": start, "end": start + 3, "motif": "WXXL", "type": "canonical"}
+
+    def _motif(self, start: int) -> dict:
+        """Minimal KFERQ motif dict (1-based start)."""
+        return {"start": start, "end": start + 4, "motif": "KFERQ", "type": "canonical"}
+
+    def test_lir_fields_present_in_return(self):
+        """Return dict must always include LIR-related keys."""
+        result = _check_degradation_proximity(0, 0, [], [], proximity_window=30)
+        for key in ("viral_lir_dist", "host_lir_dist",
+                    "proximal_lir_motif", "proximal_kferq_motif",
+                    "proximal_deg_motif"):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    def test_no_lir_motifs_returns_none_lir_dists(self):
+        """Without LIR motifs supplied, both lir_dist values are None."""
+        result = _check_degradation_proximity(10, 10, [], [], proximity_window=30)
+        self.assertIsNone(result["viral_lir_dist"])
+        self.assertIsNone(result["host_lir_dist"])
+        self.assertFalse(result["proximal_lir_motif"])
+
+    def test_proximal_viral_lir(self):
+        """Viral fragment centre within window of a LIR → proximal_lir_motif=True."""
+        # viral LIR centre at pos 11 (1-based start=10, 0-based= 9, centre= 9+2=11)
+        # fragment pos=0, centre=3; dist=|3-11|=8 ≤ 30
+        result = _check_degradation_proximity(
+            0, 200, [], [],
+            proximity_window=30,
+            viral_lir=[self._lir(10)],
+        )
+        self.assertTrue(result["proximal_lir_motif"])
+        self.assertEqual(result["viral_lir_dist"], 8)
+        self.assertIsNone(result["host_lir_dist"])
+
+    def test_proximal_host_lir(self):
+        """Host fragment centre within window of a LIR → proximal_lir_motif=True."""
+        result = _check_degradation_proximity(
+            200, 0, [], [],
+            proximity_window=30,
+            host_lir=[self._lir(10)],
+        )
+        self.assertTrue(result["proximal_lir_motif"])
+        self.assertIsNone(result["viral_lir_dist"])
+        self.assertEqual(result["host_lir_dist"], 8)
+
+    def test_lir_not_proximal_when_far(self):
+        """LIR outside proximity window → proximal_lir_motif=False."""
+        # LIR centre ~101; fragment at pos=0 centre=3; dist=98 > 30
+        result = _check_degradation_proximity(
+            0, 0, [], [],
+            proximity_window=30,
+            viral_lir=[self._lir(100)],
+        )
+        self.assertFalse(result["proximal_lir_motif"])
+
+    def test_proximal_deg_motif_is_or_of_kferq_and_lir(self):
+        """proximal_deg_motif = proximal_kferq OR proximal_lir."""
+        # Only LIR proximal
+        r1 = _check_degradation_proximity(
+            0, 200, [], [],
+            proximity_window=30,
+            viral_lir=[self._lir(10)],
+        )
+        self.assertTrue(r1["proximal_deg_motif"])
+        self.assertFalse(r1["proximal_kferq_motif"])
+
+        # Only KFERQ proximal
+        r2 = _check_degradation_proximity(
+            0, 200, [self._motif(10)], [],
+            proximity_window=30,
+        )
+        self.assertTrue(r2["proximal_deg_motif"])
+        self.assertFalse(r2["proximal_lir_motif"])
+
+        # Neither proximal
+        r3 = _check_degradation_proximity(
+            0, 0, [], [],
+            proximity_window=30,
+        )
+        self.assertFalse(r3["proximal_deg_motif"])
+
+    def test_kferq_and_lir_both_proximal(self):
+        """When both KFERQ and LIR are proximal, all three flags are True."""
+        r = _check_degradation_proximity(
+            0, 0,
+            viral_kferq=[self._motif(3)],
+            host_kferq=[],
+            proximity_window=30,
+            viral_lir=[self._lir(3)],
+        )
+        self.assertTrue(r["proximal_kferq_motif"])
+        self.assertTrue(r["proximal_lir_motif"])
+        self.assertTrue(r["proximal_deg_motif"])
+
 
 if __name__ == "__main__":
     loader = unittest.TestLoader()
